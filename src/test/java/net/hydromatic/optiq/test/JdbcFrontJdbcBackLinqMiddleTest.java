@@ -17,6 +17,7 @@
 */
 package net.hydromatic.optiq.test;
 
+import org.junit.Ignore;
 import org.junit.Test;
 
 import static net.hydromatic.optiq.test.OptiqAssert.assertThat;
@@ -211,7 +212,8 @@ public class JdbcFrontJdbcBackLinqMiddleTest {
             + "state_province=WA; S=124366.0000; DC=1828\n");
   }
 
-  public void _testPlan() {
+  @Ignore
+  @Test public void testPlan() {
     assertThat()
         .with(OptiqAssert.Config.JDBC_FOODMART)
         .query(
@@ -230,7 +232,8 @@ public class JdbcFrontJdbcBackLinqMiddleTest {
             + "            }\n");
   }
 
-  public void _testPlan2() {
+  @Ignore
+  @Test public void testPlan2() {
     assertThat()
         .with(OptiqAssert.Config.JDBC_FOODMART)
         .withSchema("foodmart")

@@ -42,6 +42,7 @@ import org.eigenbase.sql.SqlDialect;
 import org.eigenbase.util.Bug;
 import org.eigenbase.util.Pair;
 
+import org.junit.Ignore;
 import org.junit.Test;
 
 import java.lang.reflect.Method;
@@ -85,6 +86,27 @@ public class JdbcTest {
       + "   ]\n"
       + "}";
 
+  public static final String HR_SCHEMA =
+      "     {\n"
+      + "       type: 'custom',\n"
+      + "       name: 'hr',\n"
+      + "       factory: '"
+      + ReflectiveSchema.Factory.class.getName()
+      + "',\n"
+      + "       operand: {\n"
+      + "         class: '" + HrSchema.class.getName() + "'\n"
+      + "       }\n"
+      + "     }\n";
+
+  public static final String HR_MODEL =
+      "{\n"
+      + "  version: '1.0',\n"
+      + "  defaultSchema: 'hr',\n"
+      + "   schemas: [\n"
+      + HR_SCHEMA
+      + "   ]\n"
+      + "}";
+
   static String toString(ResultSet resultSet) throws SQLException {
     StringBuilder buf = new StringBuilder();
     while (resultSet.next()) {
@@ -106,7 +128,8 @@ public class JdbcTest {
    * Tests a relation that is accessed via method syntax.
    * The function returns a {@link Queryable}.
    */
-  public void _testFunction() throws SQLException, ClassNotFoundException {
+  @Ignore
+  @Test public void testFunction() throws SQLException, ClassNotFoundException {
     Class.forName("net.hydromatic.optiq.jdbc.Driver");
     Connection connection =
         DriverManager.getConnection("jdbc:optiq:");
@@ -115,10 +138,11 @@ public class JdbcTest {
     JavaTypeFactory typeFactory = optiqConnection.getTypeFactory();
     MutableSchema rootSchema = optiqConnection.getRootSchema();
     MapSchema schema = MapSchema.create(rootSchema, "s");
+    final TableFunction<Object> tableFunction =
+        Schemas.methodMember(GENERATE_STRINGS_METHOD, typeFactory);
     rootSchema.addTableFunction(
-        "GenerateStrings",
-        Schemas.methodMember(
-            GENERATE_STRINGS_METHOD, typeFactory));
+        new TableFunctionInSchemaImpl(schema, "GenerateStrings",
+            tableFunction));
     ResultSet resultSet = connection.createStatement().executeQuery(
         "select *\n"
         + "from table(s.\"GenerateStrings\"(5)) as t(c)\n"
@@ -367,7 +391,8 @@ public class JdbcTest {
             + "the_year=1998; C=365; M=April\n");
   }
 
-  public void _testCloneGroupBy2() {
+  @Ignore
+  @Test public void testCloneGroupBy2() {
     OptiqAssert.assertThat()
         .with(OptiqAssert.Config.FOODMART_CLONE)
         .query(
@@ -616,7 +641,8 @@ public class JdbcTest {
 
   /** Test case for
    * <a href="https://github.com/julianhyde/optiq/issues/35">issue #35</a>. */
-  public void _testJoinJoin() {
+  @Ignore
+  @Test public void testJoinJoin() {
     OptiqAssert.assertThat()
         .with(OptiqAssert.Config.FOODMART_CLONE)
         .query(
@@ -919,7 +945,7 @@ public class JdbcTest {
   }
 
   /** Tests sorting by a column that is already sorted. */
-  public void testOrderByOnSortedTable() {
+  @Test public void testOrderByOnSortedTable() {
     OptiqAssert.assertThat()
         .with(OptiqAssert.Config.FOODMART_CLONE)
         .query(
@@ -931,7 +957,8 @@ public class JdbcTest {
   }
 
   /** Tests sorting by a column that is already sorted. */
-  public void testOrderByOnSortedTable2() {
+  @Ignore("fix output for timezone")
+  @Test public void testOrderByOnSortedTable2() {
     OptiqAssert.assertThat()
         .with(OptiqAssert.Config.FOODMART_CLONE)
         .query(
@@ -1041,8 +1068,7 @@ public class JdbcTest {
                     fail("expected error");
                   } catch (SQLException e) {
                     assertEquals(
-                        e.getMessage(),
-                        "illegal maxRows value: -1");
+                        e.getMessage(), "illegal maxRows value: -1");
                   }
                   statement.setMaxRows(2);
                   assertEquals(2, statement.getMaxRows());
@@ -1070,6 +1096,30 @@ public class JdbcTest {
         .returns("C=730\n");
   }
 
+  /** Defines a materialized view and tests that the query is rewritten to use
+   * it, and that the query produces the same result with and without it. There
+   * are more comprehensive tests in {@link MaterializationTest}. */
+  @Ignore("until JdbcSchema can define materialized views")
+   @Test public void testModelWithMaterializedView() {
+    OptiqAssert.assertThat()
+        .withModel(FOODMART_MODEL)
+        .enable(false)
+        .query(
+            "select count(*) as c from \"foodmart\".\"sales_fact_1997\" join \"foodmart\".\"time_by_day\" using (\"time_id\")")
+        .returns("C=86837\n");
+    OptiqAssert.assertThat().withMaterializations(
+        FOODMART_MODEL,
+        "agg_c_10_sales_fact_1997",
+            "select t.`month_of_year`, t.`quarter`, t.`the_year`, sum(s.`store_sales`) as `store_sales`, sum(s.`store_cost`), sum(s.`unit_sales`), count(distinct s.`customer_id`), count(*) as `fact_count` from `time_by_day` as t join `sales_fact_1997` as s using (`time_id`) group by t.`month_of_year`, t.`quarter`, t.`the_year`")
+        .query(
+            "select t.\"month_of_year\", t.\"quarter\", t.\"the_year\", sum(s.\"store_sales\") as \"store_sales\", sum(s.\"store_cost\"), sum(s.\"unit_sales\"), count(distinct s.\"customer_id\"), count(*) as \"fact_count\" from \"time_by_day\" as t join \"sales_fact_1997\" as s using (\"time_id\") group by t.\"month_of_year\", t.\"quarter\", t.\"the_year\"")
+        .explainContains(
+            "JdbcTableScan(table=[[foodmart, agg_c_10_sales_fact_1997]])")
+        .enableMaterializations(false)
+        .explainContains("JdbcTableScan(table=[[foodmart, sales_fact_1997]])")
+        .sameResultWithMaterializationsDisabled();
+  }
+
   /** Tests a JDBC connection that provides a model that contains custom
    * tables. */
   @Test public void testModelCustomTable() {
@@ -1085,13 +1135,13 @@ public class JdbcTest {
             + "           name: 'EMPLOYEES',\n"
             + "           type: 'custom',\n"
             + "           factory: '"
-                + EmpDeptTableFactory.class.getName() + "',\n"
-                + "           operand: {'foo': 1, 'bar': [345, 357] }\n"
-                + "         }\n"
-                + "       ]\n"
-                + "     }\n"
-                + "   ]\n"
-                + "}")
+            + EmpDeptTableFactory.class.getName() + "',\n"
+            + "           operand: {'foo': 1, 'bar': [345, 357] }\n"
+            + "         }\n"
+            + "       ]\n"
+            + "     }\n"
+            + "   ]\n"
+            + "}")
         .query("select * from \"adhoc\".EMPLOYEES where \"deptno\" = 10")
         .returns(
             "empid=100; deptno=10; name=Bill; commission=1000\n"
@@ -1113,13 +1163,13 @@ public class JdbcTest {
             + "           name: 'INTEGERS',\n"
             + "           type: 'custom',\n"
             + "           factory: '"
-                + RangeTable.Factory.class.getName() + "',\n"
-                + "           operand: {'column': 'N', 'start': 3, 'end': 7 }\n"
-                + "         }\n"
-                + "       ]\n"
-                + "     }\n"
-                + "   ]\n"
-                + "}")
+            + RangeTable.Factory.class.getName() + "',\n"
+            + "           operand: {'column': 'N', 'start': 3, 'end': 7 }\n"
+            + "         }\n"
+            + "       ]\n"
+            + "     }\n"
+            + "   ]\n"
+            + "}")
         .query("select * from math.integers")
         .returns(
             "N=3\n"
@@ -1144,12 +1194,12 @@ public class JdbcTest {
             + "      name: 'adhoc',\n"
             + "      type: 'custom',\n"
             + "      factory: '"
-                + MySchemaFactory.class.getName()
-                + "',\n"
-                + "      operand: {'tableName': 'ELVIS'}\n"
-                + "    }\n"
-                + "  ]\n"
-                + "}");
+            + MySchemaFactory.class.getName()
+            + "',\n"
+            + "      operand: {'tableName': 'ELVIS'}\n"
+            + "    }\n"
+            + "  ]\n"
+            + "}");
     // check that the specified 'defaultSchema' was used
     that.doWithConnection(
         new Function1<OptiqConnection, Object>() {
@@ -1193,15 +1243,15 @@ public class JdbcTest {
             + "        }\n"
             + "      ],\n"
             + "      factory: '"
-                + MySchemaFactory.class.getName()
-                + "',\n"
-                + "      operand: {\n"
-                + "           'tableName': 'ELVIS',\n"
-                + "           'mutable': false\n"
-                + "      }\n"
-                + "    }\n"
-                + "  ]\n"
-                + "}");
+            + MySchemaFactory.class.getName()
+            + "',\n"
+            + "      operand: {\n"
+            + "           'tableName': 'ELVIS',\n"
+            + "           'mutable': false\n"
+            + "      }\n"
+            + "    }\n"
+            + "  ]\n"
+            + "}");
     that.connectThrows(
         "Cannot define view; parent schema "
         + "DelegatingSchema(delegate=ReflectiveSchema(target=HrSchema)) is "
@@ -1222,18 +1272,18 @@ public class JdbcTest {
             + "           name: 'EMPLOYEES',\n"
             + "           type: 'custom',\n"
             + "           factory: '"
-                + EmpDeptTableFactory.class.getName() + "',\n"
-                + "           operand: {'foo': true, 'bar': 345}\n"
-                + "         },\n"
-                + "         {\n"
-                + "           name: 'V',\n"
-                + "           type: 'view',\n"
-                + "           sql: 'select * from \"EMPLOYEES\" where \"deptno\" = 10'\n"
-                + "         }\n"
-                + "       ]\n"
-                + "     }\n"
-                + "   ]\n"
-                + "}");
+            + EmpDeptTableFactory.class.getName() + "',\n"
+            + "           operand: {'foo': true, 'bar': 345}\n"
+            + "         },\n"
+            + "         {\n"
+            + "           name: 'V',\n"
+            + "           type: 'view',\n"
+            + "           sql: 'select * from \"EMPLOYEES\" where \"deptno\" = 10'\n"
+            + "         }\n"
+            + "       ]\n"
+            + "     }\n"
+            + "   ]\n"
+            + "}");
 
     with.query("select * from \"adhoc\".V order by \"name\" desc")
         .returns(
@@ -1405,7 +1455,7 @@ public class JdbcTest {
 
   public static class FoodmartJdbcSchema extends JdbcSchema {
     public FoodmartJdbcSchema(
-        QueryProvider queryProvider,
+        MutableSchema parentSchema,
         DataSource dataSource,
         SqlDialect dialect,
         String catalog,
@@ -1413,7 +1463,8 @@ public class JdbcTest {
         JavaTypeFactory typeFactory,
         Expression expression) {
       super(
-          queryProvider,
+          parentSchema.getQueryProvider(),
+          parentSchema,
           "FoodMart",
           dataSource,
           dialect,

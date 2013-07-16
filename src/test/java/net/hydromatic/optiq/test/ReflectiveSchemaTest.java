@@ -23,10 +23,12 @@ import net.hydromatic.linq4j.expressions.Types;
 import net.hydromatic.linq4j.function.*;
 import net.hydromatic.optiq.MutableSchema;
 import net.hydromatic.optiq.Schemas;
+import net.hydromatic.optiq.impl.TableFunctionInSchemaImpl;
 import net.hydromatic.optiq.impl.ViewTable;
 import net.hydromatic.optiq.impl.java.*;
 import net.hydromatic.optiq.jdbc.OptiqConnection;
 
+import org.junit.Ignore;
 import org.junit.Test;
 
 import java.lang.reflect.*;
@@ -137,7 +139,8 @@ public class ReflectiveSchemaTest {
    * Tests a relation that is accessed via method syntax.
    * The function returns a {@link net.hydromatic.linq4j.Queryable}.
    */
-  public void _testOperator() throws SQLException, ClassNotFoundException {
+  @Ignore
+  @Test public void testOperator() throws SQLException, ClassNotFoundException {
     Class.forName("net.hydromatic.optiq.jdbc.Driver");
     Connection connection =
         DriverManager.getConnection("jdbc:optiq:");
@@ -147,13 +150,11 @@ public class ReflectiveSchemaTest {
     MutableSchema rootSchema = optiqConnection.getRootSchema();
     MapSchema schema = MapSchema.create(rootSchema, "s");
     schema.addTableFunction(
-        "GenerateStrings",
-        Schemas.methodMember(
-            JdbcTest.GENERATE_STRINGS_METHOD, typeFactory));
+        new TableFunctionInSchemaImpl(schema, "GenerateStrings",
+        Schemas.methodMember(JdbcTest.GENERATE_STRINGS_METHOD, typeFactory)));
     schema.addTableFunction(
-        "StringUnion",
-        Schemas.methodMember(
-            JdbcTest.STRING_UNION_METHOD, typeFactory));
+        new TableFunctionInSchemaImpl(schema, "StringUnion",
+            Schemas.methodMember(JdbcTest.STRING_UNION_METHOD, typeFactory)));
     ReflectiveSchema.create(rootSchema, "hr", new JdbcTest.HrSchema());
     ResultSet resultSet = connection.createStatement().executeQuery(
         "select *\n"
@@ -176,7 +177,6 @@ public class ReflectiveSchemaTest {
     MutableSchema rootSchema = optiqConnection.getRootSchema();
     MapSchema schema = MapSchema.create(rootSchema, "s");
     schema.addTableFunction(
-        "emps_view",
         ViewTable.viewFunction(
             schema,
             "emps_view",
@@ -240,7 +240,6 @@ public class ReflectiveSchemaTest {
     checkAgg(with, "avg");
     checkAgg(with, "count");
   }
-
 
   private void checkAgg(OptiqAssert.AssertThat with, String fn) {
     for (Field field

@@ -18,9 +18,13 @@
 package net.hydromatic.optiq;
 
 import net.hydromatic.optiq.impl.java.JavaTypeFactory;
+import net.hydromatic.optiq.jdbc.*;
 
 import org.eigenbase.reltype.RelDataType;
 import org.eigenbase.sql.type.SqlTypeUtil;
+
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Lists;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -123,6 +127,65 @@ public final class Schemas {
         return method.getReturnType();
       }
     };
+  }
+
+  /** Returns the path of a schema, appending the name of a table if not
+   * null. */
+  public static List<String> path(Schema schema, String name) {
+    final List<String> list = new ArrayList<String>();
+    if (name != null) {
+      list.add(name);
+    }
+    for (Schema s = schema; s != null; s = s.getParentSchema()) {
+      if (s.getParentSchema() != null || !s.getName().equals("")) {
+        // Omit the root schema's name from the path if it's the empty string,
+        // which it usually is.
+        list.add(s.getName());
+      }
+    }
+    return ImmutableList.copyOf(Lists.reverse(list));
+  }
+
+  /** Returns the root schema. */
+  public static Schema root(Schema schema) {
+    for (Schema s = schema;;) {
+      Schema previous = s;
+      s = s.getParentSchema();
+      if (s == null) {
+        return previous;
+      }
+    }
+  }
+
+  /** Parses and validates a SQL query. For use within Optiq only. */
+  public static OptiqPrepare.ParseResult parse(final Schema schema,
+      final List<String> schemaPath, final String sql) {
+    final OptiqPrepare prepare = OptiqPrepare.DEFAULT_FACTORY.apply();
+    final OptiqConnection connection =
+        (OptiqConnection) schema.getQueryProvider();
+    return prepare.parse(
+        new OptiqPrepare.Context() {
+          public JavaTypeFactory getTypeFactory() {
+            return schema.getTypeFactory();
+          }
+
+          public Schema getRootSchema() {
+            return connection.getRootSchema();
+          }
+
+          public List<String> getDefaultSchemaPath() {
+            if (schemaPath == null) {
+              return path(schema, null);
+            }
+            return schemaPath;
+          }
+
+          public ConnectionProperty.ConnectionConfig config() {
+            return ConnectionProperty.connectionConfig(
+                connection.getProperties());
+          }
+        },
+        sql);
   }
 }
 
