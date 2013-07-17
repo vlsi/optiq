@@ -19,7 +19,11 @@ package net.hydromatic.optiq.impl;
 
 import net.hydromatic.optiq.*;
 import net.hydromatic.optiq.jdbc.OptiqPrepare;
+import net.hydromatic.optiq.materialize.MaterializationKey;
+import net.hydromatic.optiq.materialize.MaterializationService;
 
+import org.eigenbase.rel.RelNode;
+import org.eigenbase.relopt.RelOptTable;
 import org.eigenbase.reltype.RelDataType;
 
 import java.lang.reflect.Type;
@@ -52,6 +56,17 @@ public class MaterializedViewTable<T> extends ViewTable<T> {
       final List<String> schemaPath) {
     return new TableFunctionInSchemaImpl(schema, name,
         new MaterializedViewTableFunction(schema, name, viewSql, schemaPath));
+  }
+
+  @Override
+  public RelNode toRel(RelOptTable.ToRelContext context,
+      RelOptTable relOptTable) {
+    MaterializationKey key = null;
+    if (MaterializationService.INSTANCE.isValid(key)) {
+      return materializeTable.toRel(context); // TODO:
+    } else {
+      return super.toRel(context, relOptTable);
+    }
   }
 
   public static class MaterializedViewTableFunction<T>

@@ -35,6 +35,7 @@ public class MaterializationTest {
             "select * from \"emps\" where \"deptno\" = 10")
         .query(
             "select \"empid\" + 1 from \"emps\" where \"deptno\" = 10")
+        .enableMaterializations(true)
         .explainContains(
             "JdbcTableScan(table=[[t1]])")
         .sameResultWithMaterializationsDisabled();
