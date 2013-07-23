@@ -154,8 +154,7 @@ public class OptiqPrepareImpl implements OptiqPrepare {
   public <T> PrepareResult<T> prepareQueryable(
       Context context,
       Queryable<T> queryable) {
-    return prepare_(
-        context, null, queryable, queryable.getElementType(), -1);
+    return prepare_(context, null, queryable, queryable.getElementType(), -1);
   }
 
   public <T> PrepareResult<T> prepareSql(
@@ -246,7 +245,7 @@ public class OptiqPrepareImpl implements OptiqPrepare {
 
       final List<Prepare.Materialization> materializations =
           context.config().materializationsEnabled()
-              ? MaterializationService.INSTANCE.queryMaterializations()
+              ? MaterializationService.INSTANCE.query(rootSchema)
               : ImmutableList.<Prepare.Materialization>of();
       for (Prepare.Materialization materialization : materializations) {
         populateMaterializations(planner, materialization);
@@ -327,6 +326,7 @@ public class OptiqPrepareImpl implements OptiqPrepare {
     return new PrepareResult<T>(
         sql,
         parameters,
+        jdbcType,
         columns,
         enumerable,
         resultClazz);
@@ -337,11 +337,11 @@ public class OptiqPrepareImpl implements OptiqPrepare {
     // REVIEW: initialize queryRel and tableRel inside MaterializationService,
     // not here?
     try {
-      final Schema schema = materialization.table.schema;
+      final Schema schema = materialization.materializedTable.schema;
       OptiqCatalogReader catalogReader =
           new OptiqCatalogReader(
               Schemas.root(schema),
-              butLast(materialization.table.path()),
+              butLast(materialization.materializedTable.path()),
               schema.getTypeFactory());
       final OptiqPreparingStmt preparingStmt =
           new OptiqPreparingStmt(catalogReader, catalogReader.getTypeFactory(),
@@ -349,7 +349,7 @@ public class OptiqPrepareImpl implements OptiqPrepare {
       preparingStmt.populate(materialization);
     } catch (Exception e) {
       throw new RuntimeException("While populating materialization "
-          + materialization.table.path(), e);
+          + materialization.materializedTable.path(), e);
     }
   }
 
@@ -593,6 +593,9 @@ public class OptiqPrepareImpl implements OptiqPrepare {
       };
     }
 
+    /** Populates a materialization record, converting a table path
+     * (essentially a list of strings, like ["hr", "sales"]) into a table object
+     * that can be used in the planning process. */
     void populate(Materialization materialization) {
       SqlParser parser = new SqlParser(materialization.sql);
       SqlNode node;
@@ -608,7 +611,8 @@ public class OptiqPrepareImpl implements OptiqPrepare {
       materialization.queryRel =
           sqlToRelConverter2.convertQuery(node, true, true);
 
-      RelOptTable table = catalogReader.getTable(materialization.table.path());
+      RelOptTable table =
+          catalogReader.getTable(materialization.materializedTable.path());
       materialization.tableRel =
           table.toRel(sqlToRelConverter2.makeToRelContext());
     }

@@ -30,6 +30,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -40,13 +41,14 @@ public final class Schemas {
     throw new AssertionError("no instances!");
   }
 
-  public static TableFunction resolve(
+  public static Schema.TableFunctionInSchema resolve(
       String name,
-      List<TableFunction> tableFunctions,
+      Collection<Schema.TableFunctionInSchema> tableFunctions,
       List<RelDataType> argumentTypes) {
-    final List<TableFunction> matches = new ArrayList<TableFunction>();
-    for (TableFunction member : tableFunctions) {
-      if (matches(member, argumentTypes)) {
+    final List<Schema.TableFunctionInSchema> matches =
+        new ArrayList<Schema.TableFunctionInSchema>();
+    for (Schema.TableFunctionInSchema member : tableFunctions) {
+      if (matches(member.getTableFunction(), argumentTypes)) {
         matches.add(member);
       }
     }
@@ -63,7 +65,7 @@ public final class Schemas {
   }
 
   private static boolean matches(
-      TableFunction member,
+      TableFunction<?> member,
       List<RelDataType> argumentTypes) {
     List<Parameter> parameters = member.getParameters();
     if (parameters.size() != argumentTypes.size()) {
@@ -115,6 +117,7 @@ public final class Schemas {
 
       public Table<T> apply(List<Object> arguments) {
         try {
+          //noinspection unchecked
           return (Table) method.invoke(null, arguments.toArray());
         } catch (IllegalAccessException e) {
           throw new RuntimeException(e);
@@ -161,31 +164,44 @@ public final class Schemas {
   public static OptiqPrepare.ParseResult parse(final Schema schema,
       final List<String> schemaPath, final String sql) {
     final OptiqPrepare prepare = OptiqPrepare.DEFAULT_FACTORY.apply();
+    return prepare.parse(makeContext(schema, schemaPath), sql);
+  }
+
+  /** Prepares a SQL query for execution. For use within Optiq only. */
+  public static OptiqPrepare.PrepareResult<Object> prepare(final Schema schema,
+      final List<String> schemaPath,
+      final String sql) {
+    final OptiqPrepare prepare = OptiqPrepare.DEFAULT_FACTORY.apply();
+    return prepare.prepareSql(
+        makeContext(schema, schemaPath), sql, null, Object[].class, -1);
+  }
+
+  private static OptiqPrepare.Context makeContext(final Schema schema,
+      final List<String> schemaPath) {
     final OptiqConnection connection =
         (OptiqConnection) schema.getQueryProvider();
-    return prepare.parse(
-        new OptiqPrepare.Context() {
-          public JavaTypeFactory getTypeFactory() {
-            return schema.getTypeFactory();
-          }
+    return new OptiqPrepare.Context() {
+      public JavaTypeFactory getTypeFactory() {
+        return schema.getTypeFactory();
+      }
 
-          public Schema getRootSchema() {
-            return connection.getRootSchema();
-          }
+      public Schema getRootSchema() {
+        return connection.getRootSchema();
+      }
 
-          public List<String> getDefaultSchemaPath() {
-            if (schemaPath == null) {
-              return path(schema, null);
-            }
-            return schemaPath;
-          }
+      public List<String> getDefaultSchemaPath() {
+        // schemaPath is usually null. If specified, it overrides schema
+        // as the context within which the SQL is validated.
+        if (schemaPath == null) {
+          return path(schema, null);
+        }
+        return schemaPath;
+      }
 
-          public ConnectionProperty.ConnectionConfig config() {
-            return ConnectionProperty.connectionConfig(
-                connection.getProperties());
-          }
-        },
-        sql);
+      public ConnectionProperty.ConnectionConfig config() {
+        return ConnectionProperty.connectionConfig(connection.getProperties());
+      }
+    };
   }
 }
 

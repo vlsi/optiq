@@ -38,54 +38,63 @@ import java.util.List;
  * {@link net.hydromatic.optiq.materialize.MaterializationService}.</p>
  */
 public class MaterializedViewTable<T> extends ViewTable<T> {
-  public MaterializedViewTable(
-      Schema schema,
-      Type elementType,
-      RelDataType relDataType,
-      String tableName,
-      String viewSql,
-      List<String> schemaPath) {
-    super(schema, elementType, relDataType, tableName, viewSql, schemaPath);
+
+  private final MaterializationKey key;
+
+  public MaterializedViewTable(Schema schema, Type elementType,
+      RelDataType relDataType, String tableName, String viewSql,
+      List<String> viewSchemaPath, MaterializationKey key) {
+    super(schema, elementType, relDataType, tableName, viewSql, viewSchemaPath);
+    this.key = key;
   }
 
   /** Table function that returns a materialized view. */
-  public static Schema.TableFunctionInSchema create(
-      final Schema schema,
-      final String name,
+  public static Schema.TableFunctionInSchema create(final Schema schema,
+      final String viewName,
       final String viewSql,
-      final List<String> schemaPath) {
-    return new TableFunctionInSchemaImpl(schema, name,
-        new MaterializedViewTableFunction(schema, name, viewSql, schemaPath));
+      final List<String> viewSchemaPath,
+      final String tableName) {
+    final MaterializedViewTableFunction tableFunction =
+        new MaterializedViewTableFunction(schema, viewName, viewSql,
+            viewSchemaPath, tableName);
+    return new TableFunctionInSchemaImpl(schema, viewName, tableFunction);
   }
 
   @Override
   public RelNode toRel(RelOptTable.ToRelContext context,
       RelOptTable relOptTable) {
-    MaterializationKey key = null;
-    if (MaterializationService.INSTANCE.isValid(key)) {
-      return null; // materializeTable.toRel(context); // TODO:
-    } else {
-      return super.toRel(context, relOptTable);
+    final Schema.TableInSchema tableInSchema =
+        MaterializationService.INSTANCE.checkValid(key);
+    if (tableInSchema != null) {
+      Table materializeTable = tableInSchema.getTable(null);
+      if (materializeTable instanceof TranslatableTable) {
+        TranslatableTable table = (TranslatableTable) materializeTable;
+        return table.toRel(context, relOptTable);
+      }
     }
+    return super.toRel(context, relOptTable);
   }
 
   public static class MaterializedViewTableFunction<T>
       extends ViewTableFunction<T> {
-    private MaterializedViewTableFunction(
-        Schema schema,
-        String name,
-        String viewSql,
-        List<String> schemaPath) {
-      super(schema, name, viewSql, schemaPath);
+    private final MaterializationKey key;
+
+    private MaterializedViewTableFunction(Schema schema, String viewName,
+        String viewSql, List<String> viewSchemaPath, String tableName) {
+      super(schema, viewName, viewSql, viewSchemaPath);
+      this.key =
+          MaterializationService.INSTANCE.defineMaterialization(
+              schema, viewSql, schemaPath, tableName);
     }
 
     @Override
     public Table<T> apply(List<Object> arguments) {
+      assert arguments.isEmpty();
       OptiqPrepare.ParseResult parsed =
           Schemas.parse(schema, schemaPath, viewSql);
       return new MaterializedViewTable<T>(
           schema, schema.getTypeFactory().getJavaClass(parsed.rowType),
-          parsed.rowType, name, viewSql, schemaPath);
+          parsed.rowType, name, viewSql, schemaPath, key);
     }
   }
 }

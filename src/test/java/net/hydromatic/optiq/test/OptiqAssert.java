@@ -237,8 +237,9 @@ public class OptiqAssert {
       public Void apply(ResultSet s) {
         try {
           final String actual = OptiqAssert.toString(s);
-          assertTrue("actual [" + actual + "] contains [" + expected + "]",
-              actual.contains(expected));
+          if (!actual.contains(expected)) {
+            assertEquals("contains", expected, actual);
+          }
           return null;
         } catch (SQLException e) {
           throw new RuntimeException(e);
@@ -416,7 +417,8 @@ public class OptiqAssert {
       for (int i = 0; i < materializations.length; i++) {
         String table = materializations[i++];
         buf.append("    {\n")
-            .append("      table: '").append(table).append("',\n");
+            .append("      table: '").append(table).append("',\n")
+            .append("      view: '").append(table + "v").append("',\n");
         String sql = materializations[i];
         final String sql2 = sql
             .replaceAll("`", "\"")

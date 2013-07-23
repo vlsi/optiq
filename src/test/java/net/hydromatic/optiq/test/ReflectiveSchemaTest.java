@@ -33,6 +33,7 @@ import org.junit.Test;
 
 import java.lang.reflect.*;
 import java.sql.*;
+import java.sql.Statement;
 import java.util.*;
 import java.util.Date;
 
@@ -181,7 +182,7 @@ public class ReflectiveSchemaTest {
             schema,
             "emps_view",
             "select * from \"hr\".\"emps\" where \"deptno\" = 10",
-            Collections.<String>emptyList()));
+            null));
     ReflectiveSchema.create(rootSchema, "hr", new JdbcTest.HrSchema());
     ResultSet resultSet = connection.createStatement().executeQuery(
         "select *\n"
@@ -190,6 +191,66 @@ public class ReflectiveSchemaTest {
     assertEquals(
         "empid=100; deptno=10; name=Bill; commission=1000\n",
         JdbcTest.toString(resultSet));
+  }
+
+  /**
+   * Tests a view with a path.
+   */
+  @Test public void testViewPath() throws SQLException, ClassNotFoundException {
+    Class.forName("net.hydromatic.optiq.jdbc.Driver");
+    Connection connection =
+        DriverManager.getConnection("jdbc:optiq:");
+    OptiqConnection optiqConnection =
+        connection.unwrap(OptiqConnection.class);
+    MutableSchema rootSchema = optiqConnection.getRootSchema();
+    MapSchema schema = MapSchema.create(rootSchema, "s");
+    // create a view s.emps based on hr.emps. uses explicit schema path "hr".
+    schema.addTableFunction(
+        ViewTable.viewFunction(
+            schema,
+            "emps",
+            "select * from \"emps\" where \"deptno\" = 10",
+            Collections.singletonList("hr")));
+    schema.addTableFunction(
+        ViewTable.viewFunction(
+            schema,
+            "hr_emps",
+            "select * from \"emps\"",
+            Collections.singletonList("hr")));
+    schema.addTableFunction(
+        ViewTable.viewFunction(
+            schema,
+            "s_emps",
+            "select * from \"emps\"",
+            Collections.singletonList("s")));
+    schema.addTableFunction(
+        ViewTable.viewFunction(
+            schema,
+            "null_emps",
+            "select * from \"emps\"",
+            null));
+    ReflectiveSchema.create(rootSchema, "hr", new JdbcTest.HrSchema());
+    final Statement statement = connection.createStatement();
+    ResultSet resultSet;
+    resultSet = statement.executeQuery(
+        "select * from \"s\".\"hr_emps\"");
+    assertEquals(3, count(resultSet)); // "hr_emps" -> "hr"."emps", 3 rows
+    resultSet = statement.executeQuery(
+        "select * from \"s\".\"s_emps\""); // "s_emps" -> "s"."emps", 2 rows
+    assertEquals(2, count(resultSet));
+    resultSet = statement.executeQuery(
+        "select * from \"s\".\"null_emps\""); // "null_emps" -> "s"."emps", 2
+    assertEquals(2, count(resultSet));
+    statement.close();
+  }
+
+  private int count(ResultSet resultSet) throws SQLException {
+    int i = 0;
+    while (resultSet.next()) {
+      ++i;
+    }
+    resultSet.close();
+    return i;
   }
 
   /** Tests column based on java.sql.Date field. */

@@ -457,9 +457,12 @@ public abstract class Prepare {
     public abstract Object execute();
   }
 
+  /** Describes that a given SQL query is materialized by a given table.
+   * The materialization is currently valid, and can be used in the planning
+   * process. */
   public static class Materialization {
     /** The table that holds the materialized data. */
-    final Schema.TableFunctionInSchema table;
+    final Schema.TableInSchema materializedTable;
     /** The query that derives the data. */
     final String sql;
     /** Relational expression for the table. Usually a
@@ -468,8 +471,11 @@ public abstract class Prepare {
     /** Relational expression for the query to populate the table. */
     RelNode queryRel;
 
-    public Materialization(Schema.TableFunctionInSchema table, String sql) {
-      this.table = table;
+    public Materialization(Schema.TableInSchema materializedTable,
+        String sql) {
+      assert materializedTable != null;
+      assert sql != null;
+      this.materializedTable = materializedTable;
       this.sql = sql;
     }
   }

@@ -47,8 +47,7 @@ public class ViewTable<T>
   private final String viewSql;
   private final List<String> schemaPath;
 
-  public ViewTable(
-      Schema schema,
+  public ViewTable(Schema schema,
       Type elementType,
       RelDataType relDataType,
       String tableName,
@@ -56,7 +55,8 @@ public class ViewTable<T>
       List<String> schemaPath) {
     super(schema, elementType, relDataType, tableName);
     this.viewSql = viewSql;
-    this.schemaPath = ImmutableList.copyOf(schemaPath);
+    this.schemaPath =
+        schemaPath == null ? null : ImmutableList.copyOf(schemaPath);
   }
 
   /** Table function that returns a view. */
@@ -90,8 +90,10 @@ public class ViewTable<T>
       RelDataType rowType,
       String queryString) {
     try {
+      final List<String> schemaPath1 =
+          schemaPath != null ? schemaPath : Schemas.path(schema, null);
       RelNode rel =
-          preparingStmt.expandView(rowType, queryString, schemaPath);
+          preparingStmt.expandView(rowType, queryString, schemaPath1);
 
       rel = RelOptUtil.createCastRel(rel, rowType, true);
       rel = preparingStmt.flattenTypes(rel, false);
@@ -106,6 +108,8 @@ public class ViewTable<T>
     protected final String viewSql;
     protected final Schema schema;
     protected final String name;
+    /** Typically null. If specified, overrides the path of the schema as the
+     * context for validating {@code viewSql}. */
     protected final List<String> schemaPath;
 
     ViewTableFunction(
@@ -116,7 +120,8 @@ public class ViewTable<T>
       this.viewSql = viewSql;
       this.schema = schema;
       this.name = name;
-      this.schemaPath = ImmutableList.copyOf(schemaPath);
+      this.schemaPath =
+          schemaPath == null ? null : ImmutableList.copyOf(schemaPath);
     }
 
     public List<Parameter> getParameters() {

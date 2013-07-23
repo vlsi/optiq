@@ -18,11 +18,8 @@
 package net.hydromatic.optiq.materialize;
 
 import net.hydromatic.optiq.Schema;
-import net.hydromatic.optiq.Schemas;
 
 import org.eigenbase.reltype.RelDataType;
-
-import com.google.common.collect.ImmutableList;
 
 import java.util.*;
 
@@ -33,29 +30,35 @@ class MaterializationActor {
   // Not an actor yet -- TODO make members private and add request/response
   // queues
 
-  final Map<ImmutableList<String>, Materialization> materializations =
-      new HashMap<ImmutableList<String>, Materialization>();
-
-  final Map<MaterializationKey, Materialization> materializationsByKey =
+  final Map<MaterializationKey, Materialization> keyMap =
       new HashMap<MaterializationKey, Materialization>();
 
   static class Materialization {
     final MaterializationKey key;
-    final ImmutableList<String> tablePath;
-    final Schema.TableFunctionInSchema tableFunctionInSchema;
+    final Schema rootSchema;
+    Schema.TableInSchema materializedTable;
     final String sql;
     final RelDataType rowType;
-    /** Whether currently valid. */
-    boolean valid;
 
+    /** Creates a materialization.
+     *
+     * @param key  Unique identifier of this materialization
+     * @param materializedTable Table that currently materializes the query.
+     *                          That is, executing "select * from table" will
+     *                          give the same results as executing the query.
+     *                          May be null when the materialization is created;
+     *                          materialization service will change the value as
+     * @param sql  Query that is materialized
+     * @param rowType Row type
+     */
     Materialization(MaterializationKey key,
-        Schema.TableFunctionInSchema tableFunctionInSchema, String sql,
+        Schema rootSchema,
+        Schema.TableInSchema materializedTable,
+        String sql,
         RelDataType rowType) {
       this.key = key;
-      this.tableFunctionInSchema = tableFunctionInSchema;
-      this.tablePath = ImmutableList.copyOf(
-          Schemas.path(tableFunctionInSchema.schema,
-              tableFunctionInSchema.name));
+      this.rootSchema = rootSchema;
+      this.materializedTable = materializedTable; // may be null
       this.sql = sql;
       this.rowType = rowType;
     }

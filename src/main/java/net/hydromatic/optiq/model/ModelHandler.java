@@ -22,7 +22,6 @@ import net.hydromatic.optiq.impl.*;
 import net.hydromatic.optiq.impl.java.MapSchema;
 import net.hydromatic.optiq.impl.jdbc.JdbcSchema;
 import net.hydromatic.optiq.jdbc.OptiqConnection;
-import net.hydromatic.optiq.materialize.MaterializationService;
 
 import org.apache.commons.dbcp.BasicDataSource;
 
@@ -131,34 +130,18 @@ public class ModelHandler {
             + "' is not a SemiMutableSchema");
       }
       final MutableSchema mutableSchema = (MutableSchema) schema;
-      Schema.TableFunctionInSchema tableFunctionInSchema = findMaterialization(
-          mutableSchema, jsonMaterialization.table);
-      if (tableFunctionInSchema == null) {
-        tableFunctionInSchema =
-            MaterializedViewTable.create(
-                schema,
-                jsonMaterialization.table,
-                jsonMaterialization.sql,
-                currentSchemaPath());
-        mutableSchema.addTableFunction(tableFunctionInSchema);
-      }
-      MaterializationService.INSTANCE.defineMaterialization(
-          tableFunctionInSchema, jsonMaterialization.sql);
+      Schema.TableFunctionInSchema tableFunctionInSchema =
+          MaterializedViewTable.create(
+              schema,
+              jsonMaterialization.view,
+              jsonMaterialization.sql,
+              null,
+              jsonMaterialization.table);
+      mutableSchema.addTableFunction(tableFunctionInSchema);
     } catch (Exception e) {
       throw new RuntimeException("Error instantiating " + jsonMaterialization,
           e);
     }
-  }
-
-  private Schema.TableFunctionInSchema findMaterialization(
-      MutableSchema mutableSchema, String table) {
-    for (Schema.TableFunctionInSchema tableFunctionInSchema
-        : mutableSchema.getTableFunctions(table)) {
-      if (tableFunctionInSchema.isMaterialization()) {
-        return tableFunctionInSchema;
-      }
-    }
-    return null;
   }
 
   private DataSource dataSource(JsonJdbcSchema jsonJdbcSchema) {

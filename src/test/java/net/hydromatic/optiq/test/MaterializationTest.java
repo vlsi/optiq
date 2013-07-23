@@ -17,6 +17,8 @@
 */
 package net.hydromatic.optiq.test;
 
+import net.hydromatic.optiq.materialize.MaterializationService;
+
 import org.junit.Ignore;
 import org.junit.Test;
 
@@ -27,18 +29,22 @@ import org.junit.Test;
  */
 public class MaterializationTest {
   @Test public void testFilter() {
-    OptiqAssert.assertThat()
-        .with(OptiqAssert.Config.REGULAR)
-        .withMaterializations(
-            JdbcTest.HR_MODEL,
-            "m0",
-            "select * from \"emps\" where \"deptno\" = 10")
-        .query(
-            "select \"empid\" + 1 from \"emps\" where \"deptno\" = 10")
-        .enableMaterializations(true)
-        .explainContains(
-            "JdbcTableScan(table=[[t1]])")
-        .sameResultWithMaterializationsDisabled();
+    try {
+      OptiqAssert.assertThat()
+          .with(OptiqAssert.Config.REGULAR)
+          .withMaterializations(
+              JdbcTest.HR_MODEL,
+              "m0",
+              "select * from \"emps\" where \"deptno\" = 10")
+          .query(
+              "select \"empid\" + 1 from \"emps\" where \"deptno\" = 10")
+          .enableMaterializations(true)
+          .explainContains(
+              "EnumerableTableAccessRel(table=[[hr, m0]])")
+          .sameResultWithMaterializationsDisabled();
+    } finally {
+      MaterializationService.INSTANCE.clear();
+    }
   }
 
   @Ignore

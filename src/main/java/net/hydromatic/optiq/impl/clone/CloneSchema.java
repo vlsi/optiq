@@ -21,13 +21,13 @@ import net.hydromatic.linq4j.*;
 import net.hydromatic.linq4j.expressions.*;
 
 import net.hydromatic.optiq.*;
-import net.hydromatic.optiq.impl.AbstractTable;
 import net.hydromatic.optiq.impl.TableInSchemaImpl;
 import net.hydromatic.optiq.impl.java.*;
 import net.hydromatic.optiq.impl.jdbc.JdbcSchema;
 
 import org.eigenbase.reltype.RelDataType;
 
+import java.lang.reflect.Type;
 import java.util.Map;
 
 /**
@@ -76,41 +76,31 @@ public class CloneSchema extends MapSchema {
   }
 
   private <T> Table<T> createCloneTable(Table<T> sourceTable, String name) {
-    return createCloneTable(this, name, sourceTable.getRowType(), sourceTable);
+    final TableInSchema tableInSchema =
+        createCloneTable(this, name, sourceTable.getRowType(), sourceTable);
+    addTable(tableInSchema);
+    return tableInSchema.getTable(null);
   }
 
-  public static <T> Table<T> createCloneTable(MutableSchema schema, String name,
-      RelDataType rowType, Queryable<T> source) {
+  public static <T> TableInSchema createCloneTable(MutableSchema schema,
+      String name, RelDataType rowType, Enumerable<T> source) {
     final ColumnLoader loader =
         new ColumnLoader<T>(schema.getTypeFactory(), source, rowType);
+    final Type elementType = source instanceof Queryable
+        ? ((Queryable) source).getElementType()
+        : Object.class;
     ArrayTable<T> table = new ArrayTable<T>(
-        schema,
-        source.getElementType(), rowType,
+        schema, elementType,
+        rowType,
         Expressions.call(
             schema.getExpression(),
             BuiltinMethod.DATA_CONTEXT_GET_TABLE.method,
             Expressions.constant(name),
-            Expressions.constant(Object.class)),
+            Expressions.constant(Types.toClass(elementType))),
         loader.representationValues,
         loader.size(),
         loader.sortField);
-    schema.addTable(
-        new TableInSchemaImpl(schema, name, TableType.TABLE, table));
-    return table;
-  }
-
-  /** Creates a table that will be materialized at some point in the future. */
-  public static <T> Table<T> createDeferredCloneTable(MutableSchema schema,
-      String name, RelDataType rowType, String sql) {
-    Table<T> table = new AbstractTable<T>(
-        schema, Object[].class, rowType, name) {
-      public Enumerator<T> enumerator() {
-        return Linq4j.emptyEnumerator();
-      }
-    };
-    schema.addTable(
-        new TableInSchemaImpl(schema, name, TableType.TABLE, table));
-    return table;
+    return new TableInSchemaImpl(schema, name, TableType.TABLE, table);
   }
 
   /**

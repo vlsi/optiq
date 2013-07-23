@@ -23,6 +23,7 @@ package net.hydromatic.optiq.model;
  * @see JsonRoot Description of schema elements
  */
 public class JsonMaterialization {
+  public String view;
   public String table;
   public String sql;
 
@@ -32,7 +33,7 @@ public class JsonMaterialization {
 
   @Override
   public String toString() {
-    return "JsonMaterialization(table=" + table + ")";
+    return "JsonMaterialization(table=" + table + ", view=" + view + ")";
   }
 }
 
