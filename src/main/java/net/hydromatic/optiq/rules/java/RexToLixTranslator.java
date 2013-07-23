@@ -323,8 +323,7 @@ public class RexToLixTranslator {
       assert javaClass == BigDecimal.class;
       return Expressions.new_(
           BigDecimal.class,
-          Arrays.<Expression>asList(
-              Expressions.constant(value.toString())));
+          Expressions.constant(value.toString()));
     case DATE:
       value2 =
           (int) (((Calendar) value).getTimeInMillis() / MILLIS_IN_DAY);
@@ -491,14 +490,13 @@ public class RexToLixTranslator {
             RexImpTable.NULL_EXPR,
             Expressions.new_(
                 BigDecimal.class,
-                Arrays.<Expression>asList(
-                    Expressions.unbox(operand, fromBox))));
+                Expressions.unbox(operand, fromBox)));
       }
       if (fromPrimitive != null) {
         // E.g. from "int" to "BigDecimal".
         // Generate "new BigDecimal(x)"
         return Expressions.new_(
-            BigDecimal.class, Collections.singletonList(operand));
+            BigDecimal.class, operand);
       }
       // E.g. from "Object" to "BigDecimal".
       // Generate "x == null ? null : SqlFunctions.toBigDecimal(x)"
@@ -590,7 +588,7 @@ public class RexToLixTranslator {
             Expressions.statement(
                 Expressions.call(
                     lyst,
-                    BuiltinMethod.LIST_ADD.method,
+                    BuiltinMethod.COLLECTION_ADD.method,
                     Expressions.box(translate(value)))));
       }
       return lyst;
@@ -631,12 +629,13 @@ public class RexToLixTranslator {
   }
 
   public RelDataType nullifyType(RelDataType type, boolean nullable) {
-    final Primitive primitive = javaPrimitive(type);
-    if (primitive != null) {
-      return typeFactory.createJavaType(primitive.primitiveClass);
-    } else {
-      return typeFactory.createTypeWithNullability(type, nullable);
+    if (!nullable) {
+      final Primitive primitive = javaPrimitive(type);
+      if (primitive != null) {
+        return typeFactory.createJavaType(primitive.primitiveClass);
+      }
     }
+    return typeFactory.createTypeWithNullability(type, nullable);
   }
 
   private Primitive javaPrimitive(RelDataType type) {

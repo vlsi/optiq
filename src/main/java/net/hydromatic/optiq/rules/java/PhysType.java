@@ -20,6 +20,7 @@ package net.hydromatic.optiq.rules.java;
 import net.hydromatic.linq4j.expressions.Expression;
 import net.hydromatic.linq4j.expressions.ParameterExpression;
 
+import org.eigenbase.rel.RelCollation;
 import org.eigenbase.rel.RelFieldCollation;
 import org.eigenbase.reltype.RelDataType;
 import org.eigenbase.util.Pair;
@@ -84,8 +85,15 @@ public interface PhysType {
       ParameterExpression parameter,
       List<Integer> fields);
 
-  /** Generates a selector for the given fields from an expression. */
+  /** Generates a lambda expression that is a selector for the given fields from
+   * an expression. */
   Expression generateSelector(
+      ParameterExpression parameter,
+      List<Integer> fields,
+      JavaRowFormat targetFormat);
+
+  /** Generates a selector for the given fields from an expression. */
+  Expression selector(
       ParameterExpression parameter,
       List<Integer> fields,
       JavaRowFormat targetFormat);
@@ -102,6 +110,12 @@ public interface PhysType {
   Pair<Expression, Expression> generateCollationKey(
       List<RelFieldCollation> collations);
 
+  /** Returns a comparator. Unlike the comparator returned by
+   * {@link #generateCollationKey(java.util.List)}, this comparator acts on the
+   * whole element. */
+  Expression generateComparator(
+      RelCollation collation);
+
   /** Returns a expression that yields a comparer, or null if this type
    * is comparable. */
   Expression comparer();
@@ -117,6 +131,8 @@ public interface PhysType {
 
   /** Returns the format. */
   JavaRowFormat getFormat();
+
+  List<Expression> accessors(Expression parameter, List<Integer> argList);
 }
 
 // End PhysType.java

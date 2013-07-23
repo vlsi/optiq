@@ -141,6 +141,7 @@ public class OptiqPrepareImpl implements OptiqPrepare {
     planner.addRule(JavaRules.ENUMERABLE_MINUS_RULE);
     planner.addRule(JavaRules.ENUMERABLE_TABLE_MODIFICATION_RULE);
     planner.addRule(JavaRules.ENUMERABLE_VALUES_RULE);
+    planner.addRule(JavaRules.ENUMERABLE_WINDOW_RULE);
     planner.addRule(JavaRules.ENUMERABLE_ONE_ROW_RULE);
     planner.addRule(TableAccessRule.instance);
     planner.addRule(PushFilterPastProjectRule.instance);
@@ -148,6 +149,7 @@ public class OptiqPrepareImpl implements OptiqPrepare {
     planner.addRule(RemoveDistinctAggregateRule.instance);
     planner.addRule(ReduceAggregatesRule.instance);
     planner.addRule(SwapJoinRule.instance);
+    planner.addRule(WindowedAggSplitterRule.INSTANCE);
     return planner;
   }
 
@@ -834,8 +836,8 @@ public class OptiqPrepareImpl implements OptiqPrepare {
   }
 
   interface ScalarTranslator {
-    RexNode toRex(BlockExpression expression);
-    List<RexNode> toRexList(BlockExpression expression);
+    RexNode toRex(BlockStatement statement);
+    List<RexNode> toRexList(BlockStatement statement);
     RexNode toRex(Expression expression);
     ScalarTranslator bind(
         List<ParameterExpression> parameterList, List<RexNode> values);
@@ -852,8 +854,8 @@ public class OptiqPrepareImpl implements OptiqPrepare {
       return new EmptyScalarTranslator(builder);
     }
 
-    public List<RexNode> toRexList(BlockExpression expression) {
-      final List<Expression> simpleList = simpleList(expression);
+    public List<RexNode> toRexList(BlockStatement statement) {
+      final List<Expression> simpleList = simpleList(statement);
       final List<RexNode> list = new ArrayList<RexNode>();
       for (Expression expression1 : simpleList) {
         list.add(toRex(expression1));
@@ -861,12 +863,12 @@ public class OptiqPrepareImpl implements OptiqPrepare {
       return list;
     }
 
-    public RexNode toRex(BlockExpression expression) {
-      return toRex(Blocks.simple(expression));
+    public RexNode toRex(BlockStatement statement) {
+      return toRex(Blocks.simple(statement));
     }
 
-    private static List<Expression> simpleList(BlockExpression expression) {
-      Expression simple = Blocks.simple(expression);
+    private static List<Expression> simpleList(BlockStatement statement) {
+      Expression simple = Blocks.simple(statement);
       if (simple instanceof NewExpression) {
         NewExpression newExpression = (NewExpression) simple;
         return newExpression.arguments;

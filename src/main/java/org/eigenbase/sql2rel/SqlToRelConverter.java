@@ -69,8 +69,6 @@ public class SqlToRelConverter
     protected final RexBuilder rexBuilder;
     protected final Prepare.CatalogReader catalogReader;
     protected final RelOptCluster cluster;
-    private final Map<SqlValidatorScope, LookupContext> mapScopeToLux =
-        new HashMap<SqlValidatorScope, LookupContext>();
     private DefaultValueFactory defaultValueFactory;
     private SubqueryConverter subqueryConverter;
     protected final List<RelNode> leaves = new ArrayList<RelNode>();
@@ -496,9 +494,6 @@ public class SqlToRelConverter
         final SqlValidatorScope selectScope = validator.getWhereScope(select);
         final Blackboard bb = createBlackboard(selectScope, null);
         convertSelectImpl(bb, select);
-        mapScopeToLux.put(
-            bb.scope,
-            new LookupContext(bb.root, bb.systemFieldList.size()));
         return bb.root;
     }
 
@@ -536,8 +531,8 @@ public class SqlToRelConverter
             select.getOrderList(),
             orderExprList,
             collationList);
-        final RelCollationImpl collation =
-            cluster.traitSetOf().canonize(new RelCollationImpl(collationList));
+        final RelCollation collation =
+            cluster.traitSetOf().canonize(RelCollationImpl.of(collationList));
 
         if (validator.isAggregate(select)) {
             convertAgg(
@@ -1678,10 +1673,13 @@ public class SqlToRelConverter
                 throw new AssertionError("sort key must not be empty");
             }
         }
-        final ImmutableList.Builder<RexNode> orderKeys =
+        final ImmutableList.Builder<RexFieldCollation> orderKeys =
             ImmutableList.builder();
+        final Set<SqlKind> flags = EnumSet.noneOf(SqlKind.class);
         for (SqlNode order : orderList) {
-            orderKeys.add(bb.convertExpression(order));
+            flags.clear();
+            RexNode e = bb.convertSortExpression(order, flags);
+            orderKeys.add(new RexFieldCollation(e, flags));
         }
         RexNode rexAgg = exprConverter.convertCall(bb, aggCall);
         rexAgg =
@@ -3459,8 +3457,6 @@ public class SqlToRelConverter
         assert scope != null;
         final Blackboard bb = createBlackboard(scope, null);
         convertValuesImpl(bb, values, targetRowType);
-        mapScopeToLux.put(
-            bb.scope, new LookupContext(bb.root, bb.systemFieldList.size()));
         return bb.root;
     }
 
@@ -4161,6 +4157,22 @@ public class SqlToRelConverter
             return rex;
         }
 
+        /** Converts an item in an ORDER BY clause, extracting DESC, NULLS LAST
+         * and NULLS FIRST flags first. */
+        public RexNode convertSortExpression(SqlNode expr, Set<SqlKind> flags)
+        {
+            switch (expr.getKind()) {
+            case DESCENDING:
+            case NULLS_LAST:
+            case NULLS_FIRST:
+                flags.add(expr.getKind());
+                final SqlNode operand = ((SqlCall) expr).operands[0];
+                return convertSortExpression(operand, flags);
+            default:
+                return convertExpression(expr);
+            }
+        }
+
         /**
          * Determines whether a RexNode corresponds to a subquery that's been
          * converted to a constant.
@@ -4700,20 +4712,8 @@ public class SqlToRelConverter
      */
     private static class LookupContext
     {
-        private final List<Pair<RelNode, Integer>> relOffsetList;
-
-        /**
-         * Creates a LookupContext with a single input relational expression.
-         *
-         * @param rel Relational expression
-         * @param systemFieldCount Number of system fields
-         */
-        LookupContext(RelNode rel, int systemFieldCount)
-        {
-            relOffsetList =
-                Collections.singletonList(
-                    new Pair<RelNode, Integer>(rel, systemFieldCount));
-        }
+        private final List<Pair<RelNode, Integer>> relOffsetList =
+            new ArrayList<Pair<RelNode, Integer>>();
 
         /**
          * Creates a LookupContext with multiple input relational expressions.
@@ -4724,9 +4724,7 @@ public class SqlToRelConverter
          */
         LookupContext(Blackboard bb, List<RelNode> rels, int systemFieldCount)
         {
-            relOffsetList = new ArrayList<Pair<RelNode, Integer>>();
-            int[] start = {0};
-            bb.flatten(rels, systemFieldCount, start, relOffsetList);
+            bb.flatten(rels, systemFieldCount, new int[]{0}, relOffsetList);
         }
 
         /**
@@ -4777,13 +4775,17 @@ public class SqlToRelConverter
     private class HistogramShuttle
         extends RexShuttle
     {
+        /** Whether to convert calls to MIN(x) to HISTOGRAM_MIN(HISTOGRAM(x)).
+         * Histograms allow rolling computation, but require more space. */
+        static final boolean ENABLE_HISTOGRAM_AGG = false;
+
         private final List<RexNode> partitionKeys;
-        private final List<RexNode> orderKeys;
+        private final ImmutableList<RexFieldCollation> orderKeys;
         private final SqlWindow window;
 
         HistogramShuttle(
             List<RexNode> partitionKeys,
-            List<RexNode> orderKeys,
+            ImmutableList<RexFieldCollation> orderKeys,
             SqlWindow window)
         {
             this.partitionKeys = partitionKeys;
@@ -4810,7 +4812,9 @@ public class SqlToRelConverter
             // and post CAST the data.  Example with INTEGER
             // CAST(MIN(CAST(exp to BIGINT)) to INTEGER)
             SqlFunction histogramOp =
-                isUnboundedPreceding ? null : getHistogramOp(aggOp);
+                isUnboundedPreceding || !ENABLE_HISTOGRAM_AGG
+                    ? null
+                    : getHistogramOp(aggOp);
 
             // If a window contains only the current row, treat it as physical.
             // (It could be logical too, but physical is simpler to implement.)

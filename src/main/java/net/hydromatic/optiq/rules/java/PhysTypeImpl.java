@@ -23,6 +23,7 @@ import net.hydromatic.optiq.BuiltinMethod;
 import net.hydromatic.optiq.impl.java.JavaTypeFactory;
 import net.hydromatic.optiq.runtime.Utilities;
 
+import org.eigenbase.rel.RelCollation;
 import org.eigenbase.rel.RelFieldCollation;
 import org.eigenbase.reltype.RelDataType;
 import org.eigenbase.reltype.RelDataTypeField;
@@ -111,10 +112,7 @@ public class PhysTypeImpl implements PhysType {
               }
             }
         );
-    return of(
-        typeFactory,
-        projectedRowType,
-        format.optimize(projectedRowType));
+    return of(typeFactory, projectedRowType, format.optimize(projectedRowType));
   }
 
   public Expression generateSelector(
@@ -142,11 +140,44 @@ public class PhysTypeImpl implements PhysType {
     case SCALAR:
       return Expressions.call(BuiltinMethod.IDENTITY_SELECTOR.method);
     default:
-      return Expressions.lambda(
-          Function1.class,
+      return Expressions.lambda(Function1.class,
           targetPhysType.record(fieldReferences(parameter, fields)),
           parameter);
     }
+  }
+
+  public Expression selector(
+      ParameterExpression parameter,
+      List<Integer> fields,
+      JavaRowFormat targetFormat) {
+    // Optimize target format
+    switch (fields.size()) {
+    case 0:
+      targetFormat = JavaRowFormat.LIST;
+      break;
+    case 1:
+      targetFormat = JavaRowFormat.SCALAR;
+      break;
+    }
+    final PhysType targetPhysType =
+        project(fields, targetFormat);
+    switch (format) {
+    case SCALAR:
+      return parameter;
+    default:
+      return targetPhysType.record(fieldReferences(parameter, fields));
+    }
+  }
+
+  public List<Expression> accessors(Expression v1, List<Integer> argList) {
+    final List<Expression> expressions = new ArrayList<Expression>();
+    for (int field : argList) {
+      expressions.add(
+          Types.castIfNecessary(
+              fieldClass(field),
+              fieldReference(v1, field)));
+    }
+    return expressions;
   }
 
   public Pair<Expression, Expression> generateCollationKey(
@@ -212,6 +243,106 @@ public class PhysTypeImpl implements PhysType {
                   Expressions.call(
                       Utilities.class,
                       fieldNullable(index)
+                          ? (nullsFirst
+                          ? "compareNullsFirst"
+                          : "compareNullsLast")
+                          : "compare",
+                      arg0,
+                      arg1))));
+      body.add(
+          Expressions.ifThen(
+              Expressions.notEqual(
+                  parameterC, Expressions.constant(0)),
+              Expressions.return_(
+                  null,
+                  descending
+                      ? Expressions.negate(parameterC)
+                      : parameterC)));
+    }
+    body.add(
+        Expressions.return_(null, Expressions.constant(0)));
+
+    final List<MemberDeclaration> memberDeclarations =
+        Expressions.<MemberDeclaration>list(
+            Expressions.methodDecl(
+                Modifier.PUBLIC,
+                int.class,
+                "compare",
+                Arrays.asList(
+                    parameterV0, parameterV1),
+                body.toBlock()));
+
+    if (JavaRules.BRIDGE_METHODS) {
+      final ParameterExpression parameterO0 =
+          Expressions.parameter(Object.class, "o0");
+      final ParameterExpression parameterO1 =
+          Expressions.parameter(Object.class, "o1");
+      BlockBuilder bridgeBody = new BlockBuilder();
+      bridgeBody.add(
+          Expressions.return_(
+              null,
+              Expressions.call(
+                  Expressions.parameter(
+                      Comparable.class, "this"),
+                  BuiltinMethod.COMPARATOR_COMPARE.method,
+                  Expressions.convert_(
+                      parameterO0,
+                      javaRowClass),
+                  Expressions.convert_(
+                      parameterO1,
+                      javaRowClass))));
+      memberDeclarations.add(
+          JavaRules.EnumUtil.overridingMethodDecl(
+              BuiltinMethod.COMPARATOR_COMPARE.method,
+              Arrays.asList(parameterO0, parameterO1),
+              bridgeBody.toBlock()));
+    }
+    return Pair.<Expression, Expression>of(
+        selector,
+        Expressions.new_(
+            Comparator.class,
+            Collections.<Expression>emptyList(),
+            memberDeclarations));
+  }
+
+  public Expression generateComparator(RelCollation collation) {
+    // int c;
+    // c = Utilities.compare(v0, v1);
+    // if (c != 0) return c; // or -c if descending
+    // ...
+    // return 0;
+    BlockBuilder body = new BlockBuilder();
+    final ParameterExpression parameterV0 =
+        Expressions.parameter(javaRowClass, "v0");
+    final ParameterExpression parameterV1 =
+        Expressions.parameter(javaRowClass, "v1");
+    final ParameterExpression parameterC =
+        Expressions.parameter(int.class, "c");
+    body.add(
+        Expressions.declare(
+            0, parameterC, null));
+    for (RelFieldCollation fieldCollation : collation.getFieldCollations()) {
+      final int index = fieldCollation.getFieldIndex();
+      Expression arg0 = fieldReference(parameterV0, index);
+      Expression arg1 = fieldReference(parameterV1, index);
+      switch (Primitive.flavor(fieldClass(index))) {
+      case OBJECT:
+        arg0 = Types.castIfNecessary(Comparable.class, arg0);
+        arg1 = Types.castIfNecessary(Comparable.class, arg1);
+      }
+      final boolean nullsFirst =
+          fieldCollation.nullDirection
+              == RelFieldCollation.NullDirection.FIRST;
+      final boolean descending =
+          fieldCollation.getDirection()
+              == RelFieldCollation.Direction.Descending;
+      body.add(
+          Expressions.statement(
+              Expressions.assign(
+                  parameterC,
+                  Expressions.call(
+                      Utilities.class,
+                      fieldNullable(index)
                           ? (nullsFirst != descending
                           ? "compareNullsFirst"
                           : "compareNullsLast")
@@ -254,25 +385,22 @@ public class PhysTypeImpl implements PhysType {
                   Expressions.parameter(
                       Comparable.class, "this"),
                   BuiltinMethod.COMPARATOR_COMPARE.method,
-                  Arrays.<Expression>asList(
-                      Expressions.convert_(
-                          parameterO0,
-                          javaRowClass),
-                      Expressions.convert_(
-                          parameterO1,
-                          javaRowClass)))));
+                  Expressions.convert_(
+                      parameterO0,
+                      javaRowClass),
+                  Expressions.convert_(
+                      parameterO1,
+                      javaRowClass))));
       memberDeclarations.add(
           JavaRules.EnumUtil.overridingMethodDecl(
               BuiltinMethod.COMPARATOR_COMPARE.method,
               Arrays.asList(parameterO0, parameterO1),
               bridgeBody.toBlock()));
     }
-    return Pair.<Expression, Expression>of(
-        selector,
-        Expressions.new_(
-            Comparator.class,
-            Collections.<Expression>emptyList(),
-            memberDeclarations));
+    return Expressions.new_(
+        Comparator.class,
+        Collections.<Expression>emptyList(),
+        memberDeclarations);
   }
 
   public RelDataType getRowType() {

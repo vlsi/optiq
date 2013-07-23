@@ -248,6 +248,36 @@ public class OptiqAssert {
     };
   }
 
+  public static Function1<ResultSet, Void> checkResultType(
+      final String expected) {
+    return new Function1<ResultSet, Void>() {
+      public Void apply(ResultSet s) {
+        try {
+          final String actual = typeString(s.getMetaData());
+          assertEquals(expected, actual);
+          return null;
+        } catch (SQLException e) {
+          throw new RuntimeException(e);
+        }
+      }
+    };
+  }
+
+  private static String typeString(ResultSetMetaData metaData)
+      throws SQLException {
+    final List<String> list = new ArrayList<String>();
+    for (int i = 0; i < metaData.getColumnCount(); i++) {
+      list.add(
+          metaData.getColumnName(i + 1)
+              + " "
+              + metaData.getColumnTypeName(i + 1)
+              + (metaData.isNullable(i + 1) == ResultSetMetaData.columnNoNulls
+              ? " NOT NULL"
+              : ""));
+    }
+    return list.toString();
+  }
+
   static void assertQuery(
       Connection connection,
       String sql,
@@ -510,6 +540,8 @@ public class OptiqAssert {
         return JdbcTest.getConnection("hr", "foodmart");
       case REGULAR_PLUS_METADATA:
         return JdbcTest.getConnection("hr", "foodmart", "metadata");
+      case LINGUAL:
+        return JdbcTest.getConnection("lingual");
       case JDBC_FOODMART2:
         return JdbcTest.getConnection(null, false);
       case JDBC_FOODMART:
@@ -610,6 +642,18 @@ public class OptiqAssert {
       }
     }
 
+    public AssertQuery typeIs(String expected) {
+      try {
+        assertQuery(
+            createConnection(), sql, limit, false,
+            checkResultType(expected), null);
+        return this;
+      } catch (Exception e) {
+        throw new RuntimeException(
+            "exception while executing [" + sql + "]", e);
+      }
+    }
+
     public AssertQuery explainContains(String expected) {
       String explainSql = "explain plan for " + sql;
       try {
@@ -692,6 +736,12 @@ public class OptiqAssert {
      * {@link net.hydromatic.optiq.test.JdbcTest.FoodmartSchema}.
      */
     REGULAR,
+
+    /**
+     * Configuration that creates a connection with an in-memory data set
+     * similar to the smoke test in Cascading Lingual.
+     */
+    LINGUAL,
 
     /**
      * Configuration that creates a connection to a MySQL server. Tables

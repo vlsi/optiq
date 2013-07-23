@@ -20,7 +20,9 @@ package net.hydromatic.optiq.rules.java;
 import net.hydromatic.optiq.BuiltinMethod;
 import net.hydromatic.optiq.ModifiableTable;
 import net.hydromatic.optiq.impl.java.JavaTypeFactory;
+import net.hydromatic.optiq.jdbc.JavaTypeFactoryImpl;
 import net.hydromatic.optiq.prepare.Prepare;
+import net.hydromatic.optiq.runtime.SortedMultiMap;
 
 import net.hydromatic.linq4j.*;
 import net.hydromatic.linq4j.expressions.*;
@@ -34,6 +36,7 @@ import org.eigenbase.relopt.*;
 import org.eigenbase.reltype.RelDataType;
 import org.eigenbase.reltype.RelDataTypeField;
 import org.eigenbase.rex.*;
+import org.eigenbase.sql.SqlWindowOperator;
 import org.eigenbase.sql.fun.SqlStdOperatorTable;
 import org.eigenbase.trace.EigenbaseTrace;
 import org.eigenbase.util.*;
@@ -229,17 +232,17 @@ public class JavaRules {
     }
 
     public Result implement(EnumerableRelImplementor implementor, Prefer pref) {
-      BlockBuilder list = new BlockBuilder();
+      BlockBuilder builder = new BlockBuilder();
       final Result leftResult =
           implementor.visitChild(this, 0, (EnumerableRel) left, pref);
       Expression leftExpression =
-          list.append(
-              "left", leftResult.expression);
+          builder.append(
+              "left", leftResult.block);
       final Result rightResult =
           implementor.visitChild(this, 1, (EnumerableRel) right, pref);
       Expression rightExpression =
-          list.append(
-              "right", rightResult.expression);
+          builder.append(
+              "right", rightResult.block);
       final PhysType physType =
           PhysTypeImpl.of(
               implementor.getTypeFactory(), getRowType(), pref.preferArray());
@@ -248,7 +251,7 @@ public class JavaRules {
               leftKeys, JavaRowFormat.LIST);
       return implementor.result(
           physType,
-          list.append(
+          builder.append(
               Expressions.call(
                   leftExpression,
                   BuiltinMethod.JOIN.method,
@@ -302,7 +305,7 @@ public class JavaRules {
     static MethodDeclaration overridingMethodDecl(
         Method method,
         Iterable<ParameterExpression> parameters,
-        BlockExpression body) {
+        BlockStatement body) {
       return Expressions.methodDecl(
           method.getModifiers() & ~Modifier.ABSTRACT,
           method.getReturnType(),
@@ -324,6 +327,41 @@ public class JavaRules {
       }
       final Type clazz = typeFactory.getJavaClass(type);
       return clazz instanceof Class ? (Class) clazz : Object[].class;
+    }
+
+    static List<Type> fieldTypes(
+        final JavaTypeFactory typeFactory,
+        final RelDataType inputRowType,
+        final List<Integer> argList) {
+      return new AbstractList<Type>() {
+        public Type get(int index) {
+          return EnumUtil.javaClass(
+              typeFactory,
+              inputRowType.getFieldList()
+                  .get(argList.get(index))
+                  .getType());
+        }
+        public int size() {
+          return argList.size();
+        }
+      };
+    }
+
+    static List<RexImpTable.AggImplementor2> getImplementors(
+        List<AggregateCall> aggCalls) {
+      final List<RexImpTable.AggImplementor2> implementors =
+          new ArrayList<RexImpTable.AggImplementor2>();
+      for (AggregateCall aggCall : aggCalls) {
+        RexImpTable.AggImplementor2 implementor2 =
+            RexImpTable.INSTANCE.get2(
+                aggCall.getAggregation());
+        if (implementor2 == null) {
+          throw new RuntimeException(
+              "cannot implement aggregate " + aggCall);
+        }
+        implementors.add(implementor2);
+      }
+      return implementors;
     }
   }
 
@@ -417,7 +455,9 @@ public class JavaRules {
 
       // If there's a multiset, let FarragoMultisetSplitter work on it
       // first.
-      if (RexMultisetUtil.containsMultiset(calc.getProgram())) {
+      final RexProgram program = calc.getProgram();
+      if (RexMultisetUtil.containsMultiset(program)
+          || program.containsAggs()) {
         return null;
       }
 
@@ -428,7 +468,7 @@ public class JavaRules {
               calc.getChild(),
               calc.getChild().getTraitSet()
                   .replace(EnumerableConvention.INSTANCE)),
-          calc.getProgram(),
+          program,
           ProjectRelBase.Flags.Boxed);
     }
   }
@@ -451,6 +491,7 @@ public class JavaRules {
         int flags) {
       super(cluster, traitSet, child);
       assert getConvention() instanceof EnumerableConvention;
+      assert !program.containsAggs();
       this.flags = flags;
       this.program = program;
       this.rowType = program.getOutputRowType();
@@ -489,7 +530,7 @@ public class JavaRules {
 
     public Result implement(EnumerableRelImplementor implementor, Prefer pref) {
       final JavaTypeFactory typeFactory = implementor.getTypeFactory();
-      final BlockBuilder statements = new BlockBuilder();
+      final BlockBuilder builder = new BlockBuilder();
       final EnumerableRel child = (EnumerableRel) getChild();
 
       final Result result =
@@ -522,7 +563,7 @@ public class JavaRules {
                   BuiltinMethod.ENUMERATOR_CURRENT.method),
               inputJavaType);
 
-      BlockExpression moveNextBody;
+      BlockStatement moveNextBody;
       if (program.getCondition() == null) {
         moveNextBody =
             Blocks.toFunctionBlock(
@@ -530,16 +571,16 @@ public class JavaRules {
                     inputEnumerator,
                     BuiltinMethod.ENUMERATOR_MOVE_NEXT.method));
       } else {
-        final BlockBuilder list = new BlockBuilder();
+        final BlockBuilder builder2 = new BlockBuilder();
         Expression condition =
             RexToLixTranslator.translateCondition(
                 program,
                 typeFactory,
-                list,
+                builder2,
                 new RexToLixTranslator.InputGetterImpl(
                     Collections.singletonList(
                         Pair.of(input, result.physType))));
-        list.add(
+        builder2.add(
             Expressions.ifThen(
                 condition,
                 Expressions.return_(
@@ -550,31 +591,30 @@ public class JavaRules {
                     Expressions.call(
                         inputEnumerator,
                         BuiltinMethod.ENUMERATOR_MOVE_NEXT.method),
-                    list.toBlock()),
+                    builder2.toBlock()),
                 Expressions.return_(
                     null,
                     Expressions.constant(false)));
       }
 
-      final BlockBuilder list = new BlockBuilder();
+      final BlockBuilder builder3 = new BlockBuilder();
       List<Expression> expressions =
           RexToLixTranslator.translateProjects(
               program,
               typeFactory,
-              list,
+              builder3,
               new RexToLixTranslator.InputGetterImpl(
                   Collections.singletonList(
                       Pair.of(input, result.physType))));
-      list.add(
+      builder3.add(
           Expressions.return_(
-              null,
-              physType.record(expressions)));
-      BlockExpression currentBody =
-          list.toBlock();
+              null, physType.record(expressions)));
+      BlockStatement currentBody =
+          builder3.toBlock();
 
       final Expression inputEnumerable =
-          statements.append(
-              "inputEnumerable", result.expression, false);
+          builder.append(
+              "inputEnumerable", result.block, false);
       final Expression body =
           Expressions.new_(
               enumeratorType,
@@ -601,7 +641,10 @@ public class JavaRules {
                   EnumUtil.overridingMethodDecl(
                       BuiltinMethod.ENUMERATOR_CLOSE.method,
                       NO_PARAMS,
-                      Expressions.block()),
+                      Blocks.toFunctionBlock(
+                          Expressions.call(
+                              inputEnumerator,
+                              BuiltinMethod.ENUMERATOR_CLOSE.method))),
                   Expressions.methodDecl(
                       Modifier.PUBLIC,
                       BRIDGE_METHODS
@@ -610,7 +653,7 @@ public class JavaRules {
                       "current",
                       NO_PARAMS,
                       currentBody)));
-      statements.add(
+      builder.add(
           Expressions.return_(
               null,
               Expressions.new_(
@@ -622,11 +665,10 @@ public class JavaRules {
                       Expressions.methodDecl(
                           Modifier.PUBLIC,
                           enumeratorType,
-                          BuiltinMethod.ENUMERABLE_ENUMERATOR
-                              .method.getName(),
+                          BuiltinMethod.ENUMERABLE_ENUMERATOR.method.getName(),
                           NO_PARAMS,
                           Blocks.toFunctionBlock(body))))));
-      return implementor.result(physType, statements.toBlock());
+      return implementor.result(physType, builder.toBlock());
     }
 
     public RexProgram getProgram() {
@@ -721,13 +763,13 @@ public class JavaRules {
 
     public Result implement(EnumerableRelImplementor implementor, Prefer pref) {
       final JavaTypeFactory typeFactory = implementor.getTypeFactory();
-      final BlockBuilder statements = new BlockBuilder();
+      final BlockBuilder builder = new BlockBuilder();
       final EnumerableRel child = (EnumerableRel) getChild();
       final Result result = implementor.visitChild(this, 0, child, pref);
       Expression childExp =
-          statements.append(
+          builder.append(
               "child",
-              result.expression);
+              result.block);
       RelDataType inputRowType = getChild().getRowType();
 
       final PhysType physType =
@@ -783,31 +825,20 @@ public class JavaRules {
       final List<Expression> keyExpressions = Expressions.list();
       PhysType keyPhysType =
           inputPhysType.project(
-              Util.toList(groupSet),
-              JavaRowFormat.LIST);
+              Util.toList(groupSet), JavaRowFormat.LIST);
       final int keyArity = groupSet.cardinality();
       for (int groupKey : Util.toIter(groupSet)) {
         keyExpressions.add(
             inputPhysType.fieldReference(parameter, groupKey));
       }
       final Expression keySelector =
-          statements.append(
+          builder.append(
               "keySelector",
               inputPhysType.generateSelector(
                   parameter, Util.toList(groupSet), keyPhysType.getFormat()));
 
       final List<RexImpTable.AggImplementor2> implementors =
-          new ArrayList<RexImpTable.AggImplementor2>();
-      for (AggregateCall aggCall : aggCalls) {
-        RexImpTable.AggImplementor2 implementor2 =
-            RexImpTable.INSTANCE.get2(
-                aggCall.getAggregation());
-        if (implementor2 == null) {
-          throw new RuntimeException(
-              "cannot implement aggregate " + aggCall);
-        }
-        implementors.add(implementor2);
-      }
+          EnumUtil.getImplementors(aggCalls);
 
       // Function0<Object[]> accumulatorInitializer =
       //     new Function0<Object[]>() {
@@ -823,8 +854,7 @@ public class JavaRules {
             ord.e.right.implementInit(
                 ord.e.left.getAggregation(),
                 physType.fieldClass(keyArity + ord.i),
-                fieldTypes(
-                    typeFactory,
+                EnumUtil.fieldTypes(typeFactory,
                     inputRowType,
                     ord.e.left.getArgList())));
       }
@@ -844,7 +874,7 @@ public class JavaRules {
                   }));
 
       final Expression accumulatorInitializer =
-          statements.append(
+          builder.append(
               "accumulatorInitializer",
               Expressions.lambda(
                   Function0.class,
@@ -858,16 +888,16 @@ public class JavaRules {
       //             return acc;
       //         }
       //     };
-      BlockBuilder bb2 = new BlockBuilder();
+      BlockBuilder builder2 = new BlockBuilder();
       final ParameterExpression inParameter =
           Expressions.parameter(inputPhysType.getJavaRowType(), "in");
-      final ParameterExpression accParameter =
+      final ParameterExpression acc_ =
           Expressions.parameter(accPhysType.getJavaRowType(), "acc");
       for (Ord<Pair<AggregateCall, RexImpTable.AggImplementor2>> ord
           : Ord.zip(Pair.zip(aggCalls, implementors))) {
         final Type type = initExpressions.get(ord.i).type;
         final Expression accumulator =
-            accPhysType.fieldReference(accParameter, ord.i);
+            accPhysType.fieldReference(acc_, ord.i);
         final List<Expression> conditions = new ArrayList<Expression>();
         for (int arg : ord.e.left.getArgList()) {
           if (inputPhysType.fieldNullable(arg)) {
@@ -884,25 +914,25 @@ public class JavaRules {
                     ord.e.right.implementAdd(
                         ord.e.left.getAggregation(),
                         Types.castIfNecessary(type, accumulator),
-                        accessors(
-                            inputPhysType, inParameter, ord.e.left))));
+                        inputPhysType.accessors(
+                            inParameter, ord.e.left.getArgList()))));
         if (conditions.isEmpty()) {
-          bb2.add(assign);
+          builder2.add(assign);
         } else {
-          bb2.add(
+          builder2.add(
               Expressions.ifThen(
-                  Expressions.foldAnd(conditions),
-                  assign));
+                  Expressions.foldAnd(conditions), assign));
         }
       }
-      bb2.add(accParameter);
+      builder2.add(acc_);
       final Expression accumulatorAdder =
-          statements.append(
+          builder.append(
               "accumulatorAdder",
               Expressions.lambda(
                   Function2.class,
-                  bb2.toBlock(),
-                  Arrays.asList(accParameter, inParameter)));
+                  builder2.toBlock(),
+                  acc_,
+                  inParameter));
 
       // Function2<Integer, Object[], Object[]> resultSelector =
       //     new Function2<Integer, Object[], Object[]>() {
@@ -911,15 +941,15 @@ public class JavaRules {
       //         }
       //     };
       final List<Expression> results = Expressions.list();
-      final ParameterExpression keyParameter;
+      final ParameterExpression key_;
       if (keyArity == 0) {
-        keyParameter = null;
+        key_ = null;
       } else {
         final Type keyType = keyPhysType.getJavaRowType();
-        keyParameter = Expressions.parameter(keyType, "key");
+        key_ = Expressions.parameter(keyType, "key");
         for (int j = 0; j < keyArity; j++) {
           results.add(
-              keyPhysType.fieldReference(keyParameter, j));
+              keyPhysType.fieldReference(key_, j));
         }
       }
       for (Ord<Pair<AggregateCall, RexImpTable.AggImplementor2>> ord
@@ -928,18 +958,18 @@ public class JavaRules {
             ord.e.right.implementResult(
                 ord.e.left.getAggregation(),
                 accPhysType.fieldReference(
-                    accParameter, ord.i)));
+                    acc_, ord.i)));
       }
       final PhysType resultPhysType = physType;
       if (keyArity == 0) {
         final Expression resultSelector =
-            statements.append(
+            builder.append(
                 "resultSelector",
                 Expressions.lambda(
                     Function1.class,
                     resultPhysType.record(results),
-                    accParameter));
-        statements.add(
+                    acc_));
+        builder.add(
             Expressions.return_(
                 null,
                 Expressions.call(
@@ -947,22 +977,19 @@ public class JavaRules {
                     Expressions.call(
                         childExp,
                         BuiltinMethod.AGGREGATE.method,
-                        Expressions.<Expression>list()
-                            .append(
-                                Expressions.call(
-                                    accumulatorInitializer,
-                                    "apply"))
-                            .append(accumulatorAdder)
-                            .append(resultSelector)))));
+                        Expressions.call(accumulatorInitializer, "apply"),
+                        accumulatorAdder,
+                        resultSelector))));
       } else {
         final Expression resultSelector =
-            statements.append(
+            builder.append(
                 "resultSelector",
                 Expressions.lambda(
                     Function2.class,
                     resultPhysType.record(results),
-                    Expressions.list(keyParameter, accParameter)));
-        statements.add(
+                    key_,
+                    acc_));
+        builder.add(
             Expressions.return_(
                 null,
                 Expressions.call(
@@ -977,39 +1004,7 @@ public class JavaRules {
                         .appendIfNotNull(
                             keyPhysType.comparer()))));
       }
-      return implementor.result(physType, statements.toBlock());
-    }
-
-    private List<Type> fieldTypes(
-        final JavaTypeFactory typeFactory,
-        final RelDataType inputRowType,
-        final List<Integer> argList) {
-      return new AbstractList<Type>() {
-        public Type get(int index) {
-          return EnumUtil.javaClass(
-              typeFactory,
-              inputRowType.getFieldList()
-                  .get(argList.get(index))
-                  .getType());
-        }
-        public int size() {
-          return argList.size();
-        }
-      };
-    }
-
-    private List<Expression> accessors(
-        PhysType physType,
-        ParameterExpression v1,
-        AggregateCall aggCall) {
-      final List<Expression> expressions = new ArrayList<Expression>();
-      for (int field : aggCall.getArgList()) {
-        expressions.add(
-            Types.castIfNecessary(
-                physType.fieldClass(field),
-                physType.fieldReference(v1, field)));
-      }
-      return expressions;
+      return implementor.result(physType, builder.toBlock());
     }
   }
 
@@ -1071,7 +1066,7 @@ public class JavaRules {
     }
 
     public Result implement(EnumerableRelImplementor implementor, Prefer pref) {
-      final BlockBuilder statements = new BlockBuilder();
+      final BlockBuilder builder = new BlockBuilder();
       final EnumerableRel child = (EnumerableRel) getChild();
       final Result result = implementor.visitChild(this, 0, child, pref);
       final PhysType physType =
@@ -1080,37 +1075,25 @@ public class JavaRules {
               getRowType(),
               pref.prefer(result.format));
       Expression childExp =
-          statements.append(
-              "child", result.expression);
+          builder.append(
+              "child", result.block);
 
       PhysType inputPhysType = result.physType;
       final Pair<Expression, Expression> pair =
           inputPhysType.generateCollationKey(
               collation.getFieldCollations());
 
-      final Expression keySelector =
-          statements.append(
-              "keySelector", pair.left);
-
-      final Expression comparatorExp = pair.right;
-
-      final List<Expression> arguments =
-          Expressions.list(keySelector);
-      if (comparatorExp != null) {
-        final Expression comparator =
-            statements.append(
-                "comparator",
-                comparatorExp);
-        arguments.add(comparator);
-      }
-      statements.add(
+      builder.add(
           Expressions.return_(
               null,
               Expressions.call(
                   childExp,
                   BuiltinMethod.ORDER_BY.method,
-                  arguments)));
-      return implementor.result(physType, statements.toBlock());
+                  Expressions.list(
+                      builder.append("keySelector", pair.left))
+                  .appendIfNotNull(
+                      builder.appendIfNotNull("comparator", pair.right)))));
+      return implementor.result(physType, builder.toBlock());
     }
   }
 
@@ -1161,15 +1144,15 @@ public class JavaRules {
     }
 
     public Result implement(EnumerableRelImplementor implementor, Prefer pref) {
-      final BlockBuilder statements = new BlockBuilder();
+      final BlockBuilder builder = new BlockBuilder();
       Expression unionExp = null;
       for (Ord<RelNode> ord : Ord.zip(inputs)) {
         EnumerableRel input = (EnumerableRel) ord.e;
         final Result result = implementor.visitChild(this, ord.i, input, pref);
         Expression childExp =
-            statements.append(
+            builder.append(
                 "child" + ord.i,
-                result.expression);
+                result.block);
 
         if (unionExp == null) {
           unionExp = childExp;
@@ -1188,13 +1171,13 @@ public class JavaRules {
         pref = pref.of(result.format);
       }
 
-      statements.add(unionExp);
+      builder.add(unionExp);
       final PhysType physType =
           PhysTypeImpl.of(
               implementor.getTypeFactory(),
               getRowType(),
               pref.prefer(JavaRowFormat.CUSTOM));
-      return implementor.result(physType, statements.toBlock());
+      return implementor.result(physType, builder.toBlock());
     }
   }
 
@@ -1253,15 +1236,15 @@ public class JavaRules {
     }
 
     public Result implement(EnumerableRelImplementor implementor, Prefer pref) {
-      final BlockBuilder statements = new BlockBuilder();
+      final BlockBuilder builder = new BlockBuilder();
       Expression intersectExp = null;
       for (Ord<RelNode> ord : Ord.zip(inputs)) {
         EnumerableRel input = (EnumerableRel) ord.e;
         final Result result = implementor.visitChild(this, ord.i, input, pref);
         Expression childExp =
-            statements.append(
+            builder.append(
                 "child" + ord.i,
-                result.expression);
+                result.block);
 
         if (intersectExp == null) {
           intersectExp = childExp;
@@ -1280,13 +1263,13 @@ public class JavaRules {
         pref = pref.of(result.format);
       }
 
-      statements.add(intersectExp);
+      builder.add(intersectExp);
       final PhysType physType =
           PhysTypeImpl.of(
               implementor.getTypeFactory(),
               getRowType(),
               pref.prefer(JavaRowFormat.CUSTOM));
-      return implementor.result(physType, statements.toBlock());
+      return implementor.result(physType, builder.toBlock());
     }
   }
 
@@ -1345,15 +1328,15 @@ public class JavaRules {
     }
 
     public Result implement(EnumerableRelImplementor implementor, Prefer pref) {
-      final BlockBuilder statements = new BlockBuilder();
+      final BlockBuilder builder = new BlockBuilder();
       Expression minusExp = null;
       for (Ord<RelNode> ord : Ord.zip(inputs)) {
         EnumerableRel input = (EnumerableRel) ord.e;
         final Result result = implementor.visitChild(this, ord.i, input, pref);
         Expression childExp =
-            statements.append(
+            builder.append(
                 "child" + ord.i,
-                result.expression);
+                result.block);
 
         if (minusExp == null) {
           minusExp = childExp;
@@ -1370,13 +1353,13 @@ public class JavaRules {
         pref = pref.of(result.format);
       }
 
-      statements.add(minusExp);
+      builder.add(minusExp);
       final PhysType physType =
           PhysTypeImpl.of(
               implementor.getTypeFactory(),
               getRowType(),
               pref.prefer(JavaRowFormat.CUSTOM));
-      return implementor.result(physType, statements.toBlock());
+      return implementor.result(physType, builder.toBlock());
     }
   }
 
@@ -1471,9 +1454,10 @@ public class JavaRules {
           this, 0, (EnumerableRel) getChild(), pref);
       Expression childExp =
           builder.append(
-              "child", result.expression);
+              "child", result.block);
       final ParameterExpression collectionParameter =
-          Expressions.parameter(Collection.class, "collection");
+          Expressions.parameter(Collection.class,
+              builder.newName("collection"));
       builder.add(
           Expressions.declare(
               0,
@@ -1500,12 +1484,12 @@ public class JavaRules {
                 JavaRowFormat.CUSTOM);
         List<Expression> expressionList = new ArrayList<Expression>();
         final PhysType childPhysType = result.physType;
-        final ParameterExpression o =
+        final ParameterExpression o_ =
             Expressions.parameter(childPhysType.getJavaRowType(), "o");
         final int fieldCount =
             childPhysType.getRowType().getFieldCount();
         for (int i = 0; i < fieldCount; i++) {
-          expressionList.add(childPhysType.fieldReference(o, i));
+          expressionList.add(childPhysType.fieldReference(o_, i));
         }
         convertedChildExp =
             builder.append(
@@ -1514,7 +1498,7 @@ public class JavaRules {
                     childExp,
                     BuiltinMethod.SELECT.method,
                     Expressions.lambda(
-                        physType.record(expressionList), o)));
+                        physType.record(expressionList), o_)));
       } else {
         convertedChildExp = childExp;
       }
@@ -1628,7 +1612,7 @@ public class JavaRules {
 */
       final JavaTypeFactory typeFactory =
           (JavaTypeFactory) getCluster().getTypeFactory();
-      final BlockBuilder statements = new BlockBuilder();
+      final BlockBuilder builder = new BlockBuilder();
       final PhysType physType =
           PhysTypeImpl.of(
               implementor.getTypeFactory(),
@@ -1651,15 +1635,493 @@ public class JavaRules {
         }
         expressions.add(physType.record(literals));
       }
-      statements.add(
+      builder.add(
           Expressions.return_(
               null,
               Expressions.call(
                   BuiltinMethod.AS_ENUMERABLE.method,
                   Expressions.newArrayInit(
                       Primitive.box(rowClass), expressions))));
-      return implementor.result(physType, statements.toBlock());
+      return implementor.result(physType, builder.toBlock());
     }
+  }
+
+  public static final EnumerableWindowRule ENUMERABLE_WINDOW_RULE =
+      new EnumerableWindowRule();
+
+  /**
+   * Rule to convert an {@link org.eigenbase.rel.AggregateRel} to an
+   * {@link net.hydromatic.optiq.rules.java.JavaRules.EnumerableAggregateRel}.
+   */
+  private static class EnumerableWindowRule
+      extends ConverterRule {
+    private EnumerableWindowRule() {
+      super(WindowRel.class, Convention.NONE, EnumerableConvention.INSTANCE,
+          "EnumerableWindowRule");
+    }
+
+    public RelNode convert(RelNode rel) {
+      final WindowRel winAgg = (WindowRel) rel;
+      final RelTraitSet traitSet =
+          winAgg.getTraitSet().replace(EnumerableConvention.INSTANCE);
+      final RelNode child = winAgg.getChild();
+      final RelNode convertedChild =
+          convert(child,
+              child.getTraitSet().replace(EnumerableConvention.INSTANCE));
+      return new EnumerableWindowRel(rel.getCluster(), traitSet, convertedChild,
+          winAgg.getRowType(), winAgg.windows);
+    }
+  }
+
+  public static class EnumerableWindowRel extends WindowRelBase
+      implements EnumerableRel {
+    /** Creates an EnumerableWindowRel. */
+    EnumerableWindowRel(
+        RelOptCluster cluster,
+        RelTraitSet traits,
+        RelNode child,
+        RelDataType rowType,
+        List<WindowRel.Window> windows) {
+      super(cluster, traits, child, rowType, windows);
+    }
+
+    @Override
+    public RelNode copy(RelTraitSet traitSet, List<RelNode> inputs) {
+      return new EnumerableWindowRel(getCluster(), traitSet, sole(inputs),
+          rowType, windows);
+    }
+
+    public RelOptCost computeSelfCost(RelOptPlanner planner) {
+      // Cost is proportional to the number of rows and the number of
+      // components (windows and aggregate functions). There is
+      // no I/O cost.
+      //
+      // TODO #1. Add memory cost.
+      // TODO #2. MIN and MAX have higher CPU cost than SUM and COUNT.
+      final double rowsIn = RelMetadataQuery.getRowCount(getChild());
+      int count = windows.size();
+      for (WindowRel.Window window : windows) {
+        count += window.aggCalls.size();
+      }
+      return planner.makeCost(rowsIn, rowsIn * count, 0);
+    }
+
+    public Result implement(EnumerableRelImplementor implementor, Prefer pref) {
+      final JavaTypeFactoryImpl typeFactory = implementor.getTypeFactory();
+      final EnumerableRel child = (EnumerableRel) getChild();
+
+      final BlockBuilder builder = new BlockBuilder();
+      final Result result = implementor.visitChild(this, 0, child, pref);
+      Expression source_ = builder.append("source", result.block);
+
+      PhysType inputPhysType = result.physType;
+
+      for (Window window : windows) {
+        // Comparator:
+        // final Comparator<JdbcTest.Employee> comparator =
+        //    new Comparator<JdbcTest.Employee>() {
+        //      public int compare(JdbcTest.Employee o1,
+        //          JdbcTest.Employee o2) {
+        //        return Integer.compare(o1.empid, o2.empid);
+        //      }
+        //    };
+        final Expression comparator_ =
+            builder.append(
+                "comparator",
+                inputPhysType.generateComparator(
+                    window.collation()));
+
+        // Populate map of lists, one per partition
+        //   final Map<Integer, List<Employee>> multiMap =
+        //     new SortedMultiMap<Integer, List<Employee>>();
+        //    source.foreach(
+        //      new Function1<Employee, Void>() {
+        //        public Void apply(Employee v) {
+        //          final Integer k = v.deptno;
+        //          multiMap.putMulti(k, v);
+        //          return null;
+        //        }
+        //      });
+        //   final List<Xxx> list = new ArrayList<Xxx>(multiMap.size());
+        //   Iterator<Employee[]> iterator = multiMap.arrays(comparator);
+        //
+        final Expression collectionExpr;
+        final Expression iterator_;
+        if (window.groupSet.isEmpty()) {
+          // If partition key is empty, no need to partition.
+          //
+          //   final List<Employee> tempList =
+          //       source.into(new ArrayList<Employee>());
+          //   Iterator<Employee[]> iterator =
+          //       SortedMultiMap.singletonArrayIterator(comparator, tempList);
+          //   final List<Xxx> list = new ArrayList<Xxx>(tempList.size());
+
+          final Expression tempList_ = builder.append(
+              "tempList",
+              Expressions.convert_(
+                  Expressions.call(
+                      source_,
+                      BuiltinMethod.INTO.method,
+                      Expressions.new_(ArrayList.class)),
+                  List.class));
+          iterator_ = builder.append(
+              "iterator",
+              Expressions.call(
+                  null,
+                  BuiltinMethod.SORTED_MULTI_MAP_SINGLETON.method,
+                  comparator_,
+                  tempList_));
+
+          collectionExpr = tempList_;
+        } else {
+          Expression multiMap_ =
+              builder.append(
+                  "multiMap", Expressions.new_(SortedMultiMap.class));
+          final BlockBuilder builder2 = new BlockBuilder();
+          final ParameterExpression v_ =
+              Expressions.parameter(inputPhysType.getJavaRowType(),
+                  builder2.newName("v"));
+          final DeclarationStatement declare =
+              Expressions.declare(
+                  0, "key",
+                  inputPhysType.selector(
+                      v_, Util.toList(window.groupSet), JavaRowFormat.CUSTOM));
+          builder2.add(declare);
+          final ParameterExpression key_ = declare.parameter;
+          builder2.add(
+              Expressions.statement(
+                  Expressions.call(
+                      multiMap_,
+                      BuiltinMethod.SORTED_MULTI_MAP_PUT_MULTI.method,
+                      key_,
+                      v_)));
+          builder2.add(
+              Expressions.return_(
+                  null, Expressions.constant(null)));
+
+          builder.add(
+              Expressions.statement(
+                  Expressions.call(
+                      source_,
+                      BuiltinMethod.ENUMERABLE_FOREACH.method,
+                      Expressions.lambda(
+                          builder2.toBlock(), v_))));
+
+          iterator_ = builder.append(
+              "iterator",
+              Expressions.call(
+                  multiMap_,
+                  BuiltinMethod.SORTED_MULTI_MAP_ARRAYS.method,
+                  comparator_));
+
+          collectionExpr = multiMap_;
+        }
+
+        // The output from this stage is the input plus the aggregate functions.
+        final List<Map.Entry<String, RelDataType>> fieldList =
+            new ArrayList<Map.Entry<String, RelDataType>>(
+                inputPhysType.getRowType().getFieldList());
+        final int offset = fieldList.size();
+        final List<AggregateCall> aggregateCalls =
+            window.getAggregateCalls(this);
+        for (AggregateCall aggregateCall : aggregateCalls) {
+          fieldList.add(Pair.of(aggregateCall.name, aggregateCall.type));
+        }
+        RelDataType outputRowType = typeFactory.createStructType(fieldList);
+        PhysType outputPhysType =
+            PhysTypeImpl.of(
+                typeFactory, outputRowType, pref.prefer(result.format));
+
+        // For each list of rows that have the same partitioning key, evaluate
+        // all of the windowed aggregate functions.
+        //
+        //   while (iterator.hasNext()) {
+        //     // <builder3>
+        //     Employee[] rows = iterator.next();
+        //     int i = 0;
+        //     while (i < rows.length) {
+        //       // <builder4>
+        //       JdbcTest.Employee row = rows[i];
+        //       int sum = 0;
+        //       int count = 0;
+        //       int j = Math.max(0, i - 1);
+        //       while (j <= i) {
+        //         // <builder5>
+        //         sum += rows[j].salary;
+        //         ++count;
+        //         ++j;
+        //       }
+        //       list.add(new Xxx(row.deptno, row.empid, sum, count));
+        //       i++;
+        //     }
+        //     multiMap.clear(); // allows gc
+        //   }
+        //   source = Linq4j.asEnumerable(list);
+
+        final Expression list_ =
+            builder.append(
+                "list",
+                Expressions.new_(
+                    ArrayList.class,
+                    Expressions.call(
+                        collectionExpr, BuiltinMethod.COLLECTION_SIZE.method)),
+                false);
+
+        final BlockBuilder builder3 = new BlockBuilder();
+        Expression rows_ =
+            builder3.append(
+                "rows",
+                Expressions.convert_(
+                    Expressions.call(
+                        iterator_, BuiltinMethod.ITERATOR_NEXT.method),
+                    Object[].class),
+                false);
+
+        final BlockBuilder builder4 = new BlockBuilder();
+
+        final ParameterExpression i_ =
+            Expressions.parameter(int.class, builder4.newName("i"));
+
+        final Expression row_ =
+            builder4.append(
+                "row",
+                Expressions.convert_(
+                    Expressions.arrayIndex(rows_, i_),
+                    inputPhysType.getJavaRowType()));
+
+        final List<RexImpTable.AggImplementor2> implementors =
+            EnumUtil.getImplementors(aggregateCalls);
+        final List<ParameterExpression> variables =
+            new ArrayList<ParameterExpression>();
+        for (Ord<Pair<AggregateCall, RexImpTable.AggImplementor2>> ord
+            : Ord.zip(Pair.zip(aggregateCalls, implementors))) {
+          final ParameterExpression parameter =
+              Expressions.parameter(outputPhysType.fieldClass(offset + ord.i),
+                  builder4.newName(ord.e.left.name));
+          final Expression initExpression =
+              ord.e.right.implementInit(ord.e.left.getAggregation(),
+                  parameter.type,
+                  EnumUtil.fieldTypes(typeFactory,
+                      inputPhysType.getRowType(),
+                      ord.e.left.getArgList()));
+          variables.add(parameter);
+          builder4.add(Expressions.declare(0, parameter, initExpression));
+        }
+
+        final List<Expression> expressions = new ArrayList<Expression>();
+        for (int i = 0; i < offset; i++) {
+          expressions.add(
+              Types.castIfNecessary(
+                  inputPhysType.fieldClass(i),
+                  inputPhysType.fieldReference(row_, i)));
+        }
+
+        final PhysType finalInputPhysType = inputPhysType;
+        generateWindowLoop(builder4,
+            window,
+            aggregateCalls,
+            implementors,
+            variables,
+            rows_,
+            i_,
+            row_,
+            expressions,
+            new Function1<AggCallContext, Void>() {
+              public Void apply(AggCallContext a0) {
+                for (Ord<Pair<AggregateCall, RexImpTable.AggImplementor2>> ord
+                    : Ord.zip(Pair.zip(aggregateCalls, implementors))) {
+                  final Expression accumulator = variables.get(ord.i);
+                  final List<Expression> conditions =
+                      new ArrayList<Expression>();
+                  for (int arg : ord.e.left.getArgList()) {
+                    if (finalInputPhysType.fieldNullable(arg)) {
+                      conditions.add(
+                          Expressions.notEqual(
+                              finalInputPhysType.fieldReference(row_, arg),
+                              Expressions.constant(null)));
+                    }
+                  }
+                  final Statement assign =
+                      Expressions.statement(
+                          Expressions.assign(
+                              accumulator,
+                              ord.e.right.implementAdd(
+                                  ord.e.left.getAggregation(),
+                                  accumulator,
+                                  finalInputPhysType.accessors(
+                                      row_, ord.e.left.getArgList()))));
+                  if (conditions.isEmpty()) {
+                    a0.builder().add(assign);
+                  } else {
+                    a0.builder().add(
+                        Expressions.ifThen(
+                            Expressions.foldAnd(conditions), assign));
+                  }
+                }
+                return null;
+              }
+            });
+
+        builder4.add(
+            Expressions.statement(
+                Expressions.call(
+                    list_,
+                    BuiltinMethod.COLLECTION_ADD.method,
+                    outputPhysType.record(expressions))));
+
+        builder3.add(
+            Expressions.for_(
+                Expressions.declare(0, i_, Expressions.constant(0)),
+                Expressions.lessThan(
+                    i_,
+                    Expressions.field(rows_, "length")),
+                Expressions.preIncrementAssign(i_),
+                builder4.toBlock()));
+
+        builder.add(
+            Expressions.while_(
+                Expressions.call(
+                    iterator_,
+                    BuiltinMethod.ITERATOR_HAS_NEXT.method),
+                builder3.toBlock()));
+        builder.add(
+            Expressions.statement(
+                Expressions.call(
+                    collectionExpr,
+                    BuiltinMethod.MAP_CLEAR.method)));
+
+        // We're not assigning to "source". For each window, create a new
+        // final variable called "source" or "sourceN".
+        source_ =
+            builder.append(
+                "source",
+                Expressions.call(
+                    BuiltinMethod.AS_ENUMERABLE.method, list_));
+
+        inputPhysType = outputPhysType;
+      }
+
+      //   return Linq4j.asEnumerable(list);
+      builder.add(
+          Expressions.return_(null, source_));
+      return implementor.result(inputPhysType, builder.toBlock());
+    }
+
+    /** Generates the loop that computes aggregate functions over the window.
+     * Calls a callback to increment each aggregate function's accumulator. */
+    private void generateWindowLoop(BlockBuilder builder, Window window,
+        List<AggregateCall> aggregateCalls,
+        List<RexImpTable.AggImplementor2> implementors,
+        List<ParameterExpression> variables,
+        Expression rows_,
+        ParameterExpression i_,
+        Expression row_,
+        List<Expression> expressions,
+        Function1<AggCallContext, Void> f3) {
+      //       int j = Math.max(0, i - 1);
+      //       while (j <= i) {
+      //         // <builder5>
+      //         Employee row2 = rows[j];
+      //         sum += rows[j].salary;
+      //         ++count;
+      //         ++j;
+      //       }
+
+      final Expression min_ = Expressions.constant(0);
+      final Expression max_ =
+          Expressions.subtract(Expressions.field(rows_, "length"),
+              Expressions.constant(1));
+      final SqlWindowOperator.OffsetRange offsetAndRange =
+          SqlWindowOperator.getOffsetAndRange(
+              window.lowerBound, window.upperBound, window.isRows);
+      final Expression start_ =
+          builder.append("start",
+              optimizeAdd(i_,
+                  (int) offsetAndRange.offset - (int) offsetAndRange.range,
+                  min_, max_),
+              false);
+      final Expression end_ =
+          builder.append("end",
+              optimizeAdd(i_, (int) offsetAndRange.offset, min_, max_),
+              false);
+      final DeclarationStatement jDecl = Expressions.declare(0, "j", start_);
+      final ParameterExpression j_ = jDecl.parameter;
+      final Expression row2_ = builder.append("row2",
+          Expressions.convert_(
+              Expressions.arrayIndex(rows_, j_),
+              row_.getType()));
+
+      final BlockBuilder builder5 = new BlockBuilder();
+      f3.apply(
+          new AggCallContext() {
+            public BlockBuilder builder() {
+              return builder5;
+            }
+
+            public Expression index() {
+              return j_;
+            }
+
+            public Expression current() {
+              return row2_;
+            }
+
+            public Expression isFirst() {
+              return Expressions.equal(j_, start_);
+            }
+
+            public Expression isLast() {
+              return Expressions.equal(j_, end_);
+            }
+          });
+
+      builder.add(
+          Expressions.for_(
+              jDecl,
+              Expressions.lessThanOrEqual(j_, end_),
+              Expressions.preIncrementAssign(j_),
+              builder5.toBlock()));
+
+      for (Ord<Pair<AggregateCall, RexImpTable.AggImplementor2>> ord
+          : Ord.zip(Pair.zip(aggregateCalls, implementors))) {
+        final RexImpTable.AggImplementor2 implementor2 = ord.e.right;
+        expressions.add(
+            implementor2 instanceof RexImpTable.WinAggImplementor
+                ? ((RexImpTable.WinAggImplementor) implementor2)
+                .implementResultPlus(
+                    ord.e.left.getAggregation(), variables.get(ord.i),
+                    start_, end_, rows_, i_)
+                : implementor2.implementResult(
+                    ord.e.left.getAggregation(), variables.get(ord.i)));
+      }
+    }
+
+    private Expression optimizeAdd(Expression i_,
+        int offset,
+        Expression min_,
+        Expression max_) {
+      if (offset == 0) {
+        return i_;
+      } else if (offset < 0) {
+        return Expressions.call(null,
+            BuiltinMethod.MATH_MAX.method,
+            min_,
+            Expressions.subtract(i_, Expressions.constant(-offset)));
+      } else {
+        return Expressions.call(null,
+            BuiltinMethod.MATH_MIN.method,
+            max_,
+            Expressions.add(i_, Expressions.constant(offset)));
+      }
+    }
+  }
+
+  public static interface AggCallContext {
+    BlockBuilder builder();
+    Expression index();
+    Expression current();
+    Expression isFirst();
+    Expression isLast();
   }
 }
 

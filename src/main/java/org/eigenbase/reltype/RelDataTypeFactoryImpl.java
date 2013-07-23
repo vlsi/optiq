@@ -18,9 +18,7 @@
 package org.eigenbase.reltype;
 
 import java.lang.reflect.*;
-
 import java.nio.charset.*;
-
 import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
@@ -28,6 +26,8 @@ import java.util.concurrent.ExecutionException;
 import org.eigenbase.sql.*;
 import org.eigenbase.sql.type.*;
 import org.eigenbase.util.*;
+
+import net.hydromatic.linq4j.expressions.Primitive;
 
 import com.google.common.base.Preconditions;
 import com.google.common.cache.Cache;
@@ -215,7 +215,9 @@ public abstract class RelDataTypeFactoryImpl
                     javaType.collation);
             } else {
                 return new JavaType(
-                    javaType.clazz,
+                    nullable
+                        ? Primitive.box(javaType.clazz)
+                        : Primitive.unbox(javaType.clazz),
                     nullable);
             }
         } else {

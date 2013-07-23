@@ -34,7 +34,6 @@ import net.hydromatic.optiq.runtime.SqlFunctions;
 
 import com.google.common.collect.ImmutableList;
 
-
 /**
  * Factory for row expressions.
  *
@@ -284,7 +283,7 @@ public class RexBuilder
         SqlAggFunction operator,
         List<RexNode> exprs,
         List<RexNode> partitionKeys,
-        List<RexNode> orderKeys,
+        ImmutableList<RexFieldCollation> orderKeys,
         SqlNode lowerBound,
         SqlNode upperBound,
         boolean physical,
@@ -322,7 +321,7 @@ public class RexBuilder
                         exprs,
                         window),
                     makeLiteral(
-                        new BigDecimal(0),
+                        BigDecimal.ZERO,
                         bigintType,
                         SqlTypeName.DECIMAL)),
                 over,
@@ -344,7 +343,7 @@ public class RexBuilder
                             ImmutableList.<RexNode>of(),
                             window),
                         makeLiteral(
-                            new BigDecimal(2),
+                            BigDecimal.valueOf(2),
                             bigintType,
                             SqlTypeName.DECIMAL)),
                     result,
@@ -356,26 +355,27 @@ public class RexBuilder
     /**
      * Creates a window specification.
      *
+     *
      * @param partitionKeys Partition keys
      * @param orderKeys Order keys
      * @param lowerBound Lower bound
      * @param upperBound Upper bound
-     * @param physical Whether physical. True if row-based, false if range-based
+     * @param isRows Whether physical. True if row-based, false if range-based
      * @return window specification
      */
     public RexWindow makeWindow(
         List<RexNode> partitionKeys,
-        List<RexNode> orderKeys,
+        ImmutableList<RexFieldCollation> orderKeys,
         SqlNode lowerBound,
         SqlNode upperBound,
-        boolean physical)
+        boolean isRows)
     {
         return new RexWindow(
             partitionKeys,
             orderKeys,
             lowerBound,
             upperBound,
-            physical);
+            isRows);
     }
 
     /**
@@ -496,7 +496,7 @@ public class RexBuilder
         final RexNode casted = makeCall(
             SqlStdOperatorTable.caseOperator,
             exp,
-            makeExactLiteral(new BigDecimal(1), toType),
+            makeExactLiteral(BigDecimal.ONE, toType),
             makeZeroLiteral(toType));
         if (!exp.getType().isNullable()) {
             return casted;
