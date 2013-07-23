@@ -63,7 +63,7 @@ public class MaterializedViewTable<T> extends ViewTable<T> {
       RelOptTable relOptTable) {
     MaterializationKey key = null;
     if (MaterializationService.INSTANCE.isValid(key)) {
-      return materializeTable.toRel(context); // TODO:
+      return null; // materializeTable.toRel(context); // TODO:
     } else {
       return super.toRel(context, relOptTable);
     }

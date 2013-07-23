@@ -22,11 +22,16 @@ import java.lang.reflect.*;
 import java.nio.charset.*;
 
 import java.util.*;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
 
 import org.eigenbase.sql.*;
 import org.eigenbase.sql.type.*;
 import org.eigenbase.util.*;
 
+import com.google.common.base.Preconditions;
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
 
 /**
  * Abstract base for implementations of {@link RelDataTypeFactory}.
@@ -40,8 +45,9 @@ public abstract class RelDataTypeFactoryImpl
 {
     //~ Instance fields --------------------------------------------------------
 
-    private final Map<RelDataType, RelDataType> map =
-        new HashMap<RelDataType, RelDataType>();
+    /** Global cache. Uses soft values to allow GC. */
+    private static final Cache<RelDataType, RelDataType> CACHE =
+        CacheBuilder.newBuilder().softValues().build();
 
     private static final Map<Class, RelDataTypeFamily> CLASS_FAMILIES =
         Util.<Class, RelDataTypeFamily>mapOf(
@@ -273,6 +279,7 @@ public abstract class RelDataTypeFactoryImpl
         final RelDataType type,
         final boolean nullable)
     {
+        Preconditions.checkNotNull(type);
         RelDataType newType;
         if (type instanceof RelRecordType) {
             // REVIEW: angel 18-Aug-2005 dtbug 336 workaround
@@ -296,15 +303,21 @@ public abstract class RelDataTypeFactoryImpl
     /**
      * Registers a type, or returns the existing type if it is already
      * registered.
+     *
+     * @throws NullPointerException if type is null
      */
-    protected RelDataType canonize(RelDataType type)
+    protected RelDataType canonize(final RelDataType type)
     {
-        RelDataType type2 = map.get(type);
-        if (type2 != null) {
-            return type2;
-        } else {
-            map.put(type, type);
-            return type;
+        try {
+            return CACHE.get(
+                type,
+                new Callable<RelDataType>() {
+                    public RelDataType call() throws Exception {
+                        return type;
+                    }
+                });
+        } catch (ExecutionException e) {
+            throw new RuntimeException(e);
         }
     }
 

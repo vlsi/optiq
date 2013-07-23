@@ -19,9 +19,7 @@ package org.eigenbase.sql.type;
 
 import org.eigenbase.reltype.*;
 import org.eigenbase.sql.*;
-import org.eigenbase.sql.validate.*;
 import org.eigenbase.util.*;
-
 
 /**
  * Strategy to infer the type of an operator call from the type of the operands
@@ -102,6 +100,11 @@ public class SqlTypeTransformCascade
         SqlOperatorBinding opBinding)
     {
         RelDataType ret = rule.inferReturnType(opBinding);
+        if (ret == null) {
+            // inferReturnType may return null; transformType does not accept or
+            // return null types
+            return null;
+        }
         for (int i = 0; i < transforms.length; i++) {
             SqlTypeTransform transform = transforms[i];
             ret = transform.transformType(opBinding, ret);
