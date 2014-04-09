@@ -62,7 +62,9 @@ public class RexToLixTranslator {
   private final RexProgram program;
   private final RexToLixTranslator.InputGetter inputGetter;
   private final BlockBuilder list;
+  private final BlockBuilder rootBlockBuilder;
   private final Map<RexNode, Boolean> exprNullableMap;
+  private final RexToLixTranslator parent;
 
   private static Method findMethod(
       Class<?> clazz, String name, Class... parameterTypes) {
@@ -91,12 +93,26 @@ public class RexToLixTranslator {
       BlockBuilder list,
       Map<RexNode, Boolean> exprNullableMap,
       RexBuilder builder) {
+    this(program, typeFactory, inputGetter, list, exprNullableMap, builder,
+        null);
+  }
+
+  private RexToLixTranslator(
+      RexProgram program,
+      JavaTypeFactory typeFactory,
+      InputGetter inputGetter,
+      BlockBuilder list,
+      Map<RexNode, Boolean> exprNullableMap,
+      RexBuilder builder,
+      RexToLixTranslator parent) {
     this.program = program;
     this.typeFactory = typeFactory;
     this.inputGetter = inputGetter;
     this.list = list;
     this.exprNullableMap = exprNullableMap;
     this.builder = builder;
+    this.parent = parent;
+    this.rootBlockBuilder = parent == null ? list : parent.rootBlockBuilder;
   }
 
   /**
@@ -131,6 +147,10 @@ public class RexToLixTranslator {
 
   Expression translate(RexNode expr, RexImpTable.NullAs nullAs) {
     Expression expression = translate0(expr, nullAs);
+    DeclarationStatement known = list.getComputedExpression(expression);
+    if (known != null) {
+      expression = known.parameter;
+    }
     assert expression != null;
     if (expression instanceof BinaryExpression && (
         nullAs == RexImpTable.NullAs.IS_NULL
@@ -308,9 +328,9 @@ public class RexToLixTranslator {
     switch (expr.getKind()) {
     case INPUT_REF:
       final int index = ((RexInputRef) expr).getIndex();
-      Expression x = inputGetter.field(list, index);
+      Expression x = inputGetter.field(rootBlockBuilder, index);
 
-      Expression input = list.append("inp" + index + "_", x); // safe to share
+      Expression input = rootBlockBuilder.append("inp" + index + "_", x); // safe to share
       Expression nullHandled = nullAs.handle(input);
 
       // If we get ConstantExpression, just return it (i.e. primitive false)
@@ -762,6 +782,32 @@ public class RexToLixTranslator {
           ((RelDataTypeFactoryImpl.JavaType) type).getJavaClass());
     }
     return null;
+  }
+
+  public RexToLixTranslator goDeeper() {
+    return new RexToLixTranslator(
+        program, typeFactory, inputGetter, new BlockBuilder(true, list),
+        exprNullableMap,
+        builder, this);
+  }
+
+  public Expression declareLocal(String name, Type type, Expression initializer) {
+    ParameterExpression pe = Expressions.parameter(type,
+        list.newName(name));
+    list.add(Expressions.declare(0, pe, initializer));
+    return pe;
+  }
+
+  public void addStatement(Statement statement) {
+    list.add(statement);
+  }
+
+  public void addExpression(Expression expression) {
+    list.add(expression);
+  }
+
+  public Node toBlock() {
+    return list.toBlock();
   }
 
   /** Translates a field of an input to an expression. */

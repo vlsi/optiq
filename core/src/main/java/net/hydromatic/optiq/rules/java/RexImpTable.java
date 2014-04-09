@@ -38,6 +38,7 @@ import org.eigenbase.sql.validate.SqlUserDefinedFunction;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
+import org.eigenbase.util.Pair;
 
 import java.lang.reflect.*;
 import java.math.BigDecimal;
@@ -554,22 +555,58 @@ public class RexImpTable {
     switch (nullAs) {
     case NULL:
       // v0 == null || v1 == null ? null : f(v0, v1)
-      for (Ord<RexNode> operand : Ord.zip(call.getOperands())) {
-        if (translator.isNullable(operand.e)) {
-          list.add(
-              translator.translate(
-                  operand.e, NullAs.IS_NULL));
-          translator = translator.setNullable(operand.e, false);
+      // : translator
+      // ? result;
+      // if (v0 == null) {
+      //   result = null;
+      // } else { // nestedTranslator1
+      //   result = f(v0);
+      // }
+      final RexToLixTranslator translator0 = translator;
+      final List<Pair<Expression, RexToLixTranslator>>
+          tests = new ArrayList<Pair<Expression, RexToLixTranslator>>();
+      for (RexNode operand : call.getOperands()) {
+        if (translator.isNullable(operand)) {
+          Expression expr = translator.translate(
+              operand, NullAs.IS_NOT_NULL);
+          expr = optimize(expr);
+          tests.add(new Pair<Expression, RexToLixTranslator>(
+              expr, translator));
+          translator = translator.setNullable(operand, false);
+          translator = translator.goDeeper();
         }
       }
+
       final Expression box =
           Expressions.box(
               implementCall(translator, call, implementor, nullAs));
-      return optimize(
-          Expressions.condition(
-              Expressions.foldOr(list),
-              Types.castIfNecessary(box.getType(), NULL_EXPR),
-              box));
+
+      if (translator == translator0) {
+        // No nesting ifs required
+        // Optimize just in case (is it really required?)
+        return optimize(box);
+      }
+      // Declare variable for result in the top-most translator
+      Expression result = translator0.declareLocal("res", box.getType(), Types.castIfNecessary(box
+                                .getType(), NULL_EXPR));
+      // Store result into the result variable from deepest translator
+      translator.addStatement(Expressions.statement(Expressions.assign
+          (result, box)));
+
+      // Now translator.toBlock() is as follows: {
+      //   result = f(v0)
+      // }
+
+      for (int i = tests.size() - 1; i >= 0; i--) {
+        Expression cond = tests.get(i).left;
+        RexToLixTranslator trans = tests.get(i).right;
+        trans.addStatement(Expressions.ifThen(
+            cond, translator.toBlock()
+        ));
+        translator = trans;
+      }
+
+      return result;
     case FALSE:
       // v0 != null && v1 != null && f(v0, v1)
       for (Ord<RexNode> operand : Ord.zip(call.getOperands())) {
