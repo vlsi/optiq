@@ -354,7 +354,11 @@ public class ReflectiveSchemaTest {
             "return inp13_ == null ? (Long) null : Long.valueOf(inp13_.longValue() / current.primitiveLong);")
         .returns("C=null\n");
     with.query(
-        "select \"wrapperLong\" / \"wrapperLong\" as c\n"
+        "select"
+        +" \"wrapperLong\" / \"wrapperLong\" as c "
+        +",\"wrapperLong\" / \"wrapperLong\" as d "
+        +",\"wrapperLong\" / \"wrapperLong\" + \"wrapperLong\" / "
+        +" \"wrapperLong\" as c\n"
         + " from \"s\".\"everyTypes\" where \"primitiveLong\" <> 0")
         .planContains(
             "final Long inp13_ = ((net.hydromatic.optiq.test.ReflectiveSchemaTest.EveryType) inputEnumerator.current()).wrapperLong;")
