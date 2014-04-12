@@ -356,7 +356,7 @@ public class ReflectiveSchemaTest {
     with.query(
         "select"
         +" \"wrapperLong\" / \"wrapperLong\" as c "
-        +",\"wrapperLong\" / \"wrapperLong\" as d "
+//        +",\"wrapperLong\" / \"wrapperLong\" as d "
         +",\"wrapperLong\" / \"wrapperLong\" + \"wrapperLong\" / "
         +" \"wrapperLong\" as c\n"
         + " from \"s\".\"everyTypes\" where \"primitiveLong\" <> 0")

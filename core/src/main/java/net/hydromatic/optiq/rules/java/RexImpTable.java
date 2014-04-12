@@ -417,7 +417,11 @@ public class RexImpTable {
   }
 
   static Expression optimize(Expression expression) {
-    return expression.accept(new OptimizeVisitor());
+    return expression;//.accept(new OptimizeVisitor());
+  }
+
+  static Statement optimize(Statement statement) {
+    return statement;//.accept(new OptimizeVisitor());
   }
 
   static Expression optimize2(Expression operand, Expression expression) {
@@ -569,7 +573,6 @@ public class RexImpTable {
         if (translator.isNullable(operand)) {
           Expression expr = translator.translate(
               operand, NullAs.IS_NOT_NULL);
-          expr = optimize(expr);
           tests.add(new Pair<Expression, RexToLixTranslator>(
               expr, translator));
           translator = translator.setNullable(operand, false);
@@ -600,9 +603,9 @@ public class RexImpTable {
       for (int i = tests.size() - 1; i >= 0; i--) {
         Expression cond = tests.get(i).left;
         RexToLixTranslator trans = tests.get(i).right;
-        trans.addStatement(Expressions.ifThen(
+        trans.addStatement(optimize(Expressions.ifThen(
             cond, translator.toBlock()
-        ));
+        )));
         translator = trans;
       }
 
@@ -1084,132 +1087,6 @@ public class RexImpTable {
      * result is null; else true. */
     NOT,
     NONE
-  }
-
-  /** Visitor that optimizes expressions.
-   *
-   * <p>The optimizations are essential, not mere tweaks. Without
-   * optimization, expressions such as {@code false == null} will be left in,
-   * which are invalid to Janino (because it does not automatically box
-   * primitives).</p>
-   */
-  static class OptimizeVisitor extends Visitor {
-    @Override
-    public Expression visit(
-        TernaryExpression ternaryExpression,
-        Expression expression0,
-        Expression expression1,
-        Expression expression2) {
-      final TernaryExpression ternary = (TernaryExpression) super.visit(
-          ternaryExpression, expression0, expression1, expression2);
-      switch (ternary.getNodeType()) {
-      case Conditional:
-        Boolean always = always(ternary.expression0);
-        if (always != null) {
-          // true ? y : z  ===  y
-          // false ? y : z  === z
-          return always
-              ? ternary.expression1
-              : ternary.expression2;
-        }
-        if (ternary.expression1.equals(ternary.expression2)) {
-          // a ? b : b   ===   b
-          return ternary.expression1;
-        }
-      }
-      return ternary;
-    }
-
-    @Override
-    public Expression visit(
-        BinaryExpression binaryExpression,
-        Expression expression0,
-        Expression expression1) {
-      final BinaryExpression binary = (BinaryExpression) super.visit(
-          binaryExpression, expression0, expression1);
-      Boolean always;
-      switch (binary.getNodeType()) {
-      case AndAlso:
-        always = always(binary.expression0);
-        if (always != null) {
-          return always
-              ? binary.expression1
-              : FALSE_EXPR;
-        }
-        always = always(binary.expression1);
-        if (always != null) {
-          return always
-              ? binary.expression0
-              : FALSE_EXPR;
-        }
-        break;
-      case OrElse:
-        always = always(binary.expression0);
-        if (always != null) {
-          // true or x  --> true
-          // null or x  --> x
-          // false or x --> x
-          return !always
-              ? binary.expression1
-              : TRUE_EXPR;
-        }
-        always = always(binary.expression1);
-        if (always != null) {
-          return !always
-              ? binary.expression0
-              : TRUE_EXPR;
-        }
-        break;
-      case Equal:
-        if (binary.expression0 instanceof ConstantExpression
-            && binary.expression1 instanceof ConstantExpression) {
-          return binary.expression0.equals(binary.expression1)
-              ? TRUE_EXPR : FALSE_EXPR;
-        }
-        if (isConstantNull(binary.expression1)
-            && Primitive.is(binary.expression0.getType())) {
-          return FALSE_EXPR;
-        }
-        if (isConstantNull(binary.expression0)
-            && Primitive.is(binary.expression1.getType())) {
-          return FALSE_EXPR;
-        }
-        break;
-      case NotEqual:
-        if (binary.expression0 instanceof ConstantExpression
-            && binary.expression1 instanceof ConstantExpression) {
-          return !binary.expression0.equals(binary.expression1)
-              ? TRUE_EXPR : FALSE_EXPR;
-        }
-        if (isConstantNull(binary.expression1)
-            && Primitive.is(binary.expression0.getType())) {
-          return TRUE_EXPR;
-        }
-        if (isConstantNull(binary.expression0)
-            && Primitive.is(binary.expression1.getType())) {
-          return TRUE_EXPR;
-        }
-        break;
-      }
-      return binary;
-    }
-
-    private boolean isConstantNull(Expression expression) {
-      return expression instanceof ConstantExpression
-          && ((ConstantExpression) expression).value == null;
-    }
-
-    /** Returns whether an expression always evaluates to true or false.
-     * Assumes that expression has already been optimized. */
-    private static Boolean always(Expression x) {
-      if (x.equals(FALSE_EXPR) || x.equals(BOXED_FALSE_EXPR)) {
-        return Boolean.FALSE;
-      }
-      if (x.equals(TRUE_EXPR) || x.equals(BOXED_TRUE_EXPR)) {
-        return Boolean.TRUE;
-      }
-      return null;
-    }
   }
 
   private static class CaseImplementor extends AbstractCallImplementor {

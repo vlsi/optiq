@@ -145,6 +145,9 @@ public class RexToLixTranslator {
     return translate(expr, nullAs);
   }
 
+  HashMap<Pair<RexNode, RexImpTable.NullAs>, Expression> translatedRex
+      = new HashMap<Pair<RexNode, RexImpTable.NullAs>, Expression>();
+
   Expression translate(RexNode expr, RexImpTable.NullAs nullAs) {
     Expression expression = translate0(expr, nullAs);
     DeclarationStatement known = list.getComputedExpression(expression);
@@ -172,6 +175,14 @@ public class RexToLixTranslator {
       }
     }
     return list.append("v", expression);
+  }
+
+  private Expression getTranslatedExpression(Pair<RexNode, RexImpTable.NullAs> translateKey) {
+    Expression result = null;
+    if (parent != null) {
+      result = parent.getTranslatedExpression(translateKey);
+    }
+    return result != null ? result : translatedRex.get(translateKey);
   }
 
   Expression translateCast(
@@ -327,40 +338,9 @@ public class RexToLixTranslator {
     }
     switch (expr.getKind()) {
     case INPUT_REF:
-      final int index = ((RexInputRef) expr).getIndex();
-      Expression x = inputGetter.field(rootBlockBuilder, index);
-
-      Expression input = rootBlockBuilder.append("inp" + index + "_", x); // safe to share
-      Expression nullHandled = nullAs.handle(input);
-
-      // If we get ConstantExpression, just return it (i.e. primitive false)
-      if (nullHandled instanceof ConstantExpression) {
-        return nullHandled;
-      }
-
-      // if nullHandled expression is the same as "input",
-      // then we can just reuse it
-      if (nullHandled == input) {
-        return input;
-      }
-
-      // If nullHandled is different, then it might be unsafe to compute
-      // early (i.e. unbox of null value should not happen _before_ ternary).
-      // Thus we wrap it into brand-new ParameterExpression,
-      // and we are guaranteed that ParameterExpression will not be shared
-      String unboxVarName = "v_unboxed";
-      if (input instanceof ParameterExpression) {
-        unboxVarName = ((ParameterExpression) input).name + "_unboxed";
-      }
-      ParameterExpression unboxed = Expressions.parameter(nullHandled.getType(),
-          list.newName(unboxVarName));
-      list.add(Expressions.declare(0, unboxed, nullHandled));
-
-      return unboxed;
+      return translateInputRef((RexInputRef) expr, nullAs);
     case LOCAL_REF:
-      return translate(
-          program.getExprList().get(((RexLocalRef) expr).getIndex()),
-          nullAs);
+      return translateLocalRef((RexLocalRef) expr, nullAs);
     case LITERAL:
       return translateLiteral(
           expr,
@@ -379,6 +359,74 @@ public class RexToLixTranslator {
       throw new RuntimeException(
           "cannot translate expression " + expr);
     }
+  }
+
+  private Expression translateInputRef(RexInputRef expr, RexImpTable.NullAs nullAs) {
+    final int index = expr.getIndex();
+    Expression x = inputGetter.field(rootBlockBuilder, index);
+
+    Expression input = rootBlockBuilder.append("inp" + index + "_", x); // safe to share
+    Expression nullHandled = nullAs.handle(input);
+
+    // If we get ConstantExpression, just return it (i.e. primitive false)
+    if (nullHandled instanceof ConstantExpression) {
+      return nullHandled;
+    }
+
+    // if nullHandled expression is the same as "input",
+    // then we can just reuse it
+    if (nullHandled == input) {
+      return input;
+    }
+
+    // If nullHandled is different, then it might be unsafe to compute
+    // early (i.e. unbox of null value should not happen _before_ ternary).
+    // Thus we wrap it into brand-new ParameterExpression,
+    // and we are guaranteed that ParameterExpression will not be shared
+    String unboxVarName = "v_unboxed"; // Should never happen to be used
+    if (input instanceof ParameterExpression) {
+      unboxVarName = ((ParameterExpression) input).name + nullAs.name();
+    }
+    ParameterExpression unboxed = Expressions.parameter(nullHandled.getType(),
+        list.newName(unboxVarName));
+    list.add(Expressions.declare(0, unboxed, nullHandled));
+
+    return unboxed;
+  }
+
+  private Expression translateLocalRef(RexLocalRef ref, RexImpTable.NullAs nullAs) {
+    // We cache local refs, since RexProgram reuses RexLocalRefs when same
+    // computations are performed multiple times
+    Pair<RexNode, RexImpTable.NullAs> translateKey
+        = Pair.of((RexNode) ref, nullAs);
+    Expression expression = getTranslatedExpression(translateKey);
+    if (expression != null) {
+      return expression;
+    }
+
+    if (nullAs == RexImpTable.NullAs.NOT_POSSIBLE) {
+      // For instance, if we already have computed NULL case (nullable
+      // expresssion) then we just unbox it (and remember unboxing for
+      // possible reuse)
+      Pair<RexNode, RexImpTable.NullAs> nullKey = Pair.of((RexNode) ref,
+          RexImpTable.NullAs.NULL);
+      expression = getTranslatedExpression(nullKey);
+      if (expression != null) {
+        Expression unboxed = nullAs.handle(expression);
+        if (unboxed != expression) {
+          unboxed = list.append("t" + ref.getIndex() + "_" + nullAs.name(),
+              unboxed);
+        }
+        translatedRex.put(nullKey, unboxed);
+        return unboxed;
+      }
+    }
+
+    Expression translated = translate(
+        program.getExprList().get(ref.getIndex()),
+        nullAs);
+    translatedRex.put(translateKey, translated);
+    return translated;
   }
 
   /** Translates a call to an operator or function. */
@@ -763,7 +811,7 @@ public class RexToLixTranslator {
         new HashMap<RexNode, Boolean>(exprNullableMap);
     map.put(e, nullable);
     return new RexToLixTranslator(
-        program, typeFactory, inputGetter, list, map, builder);
+        program, typeFactory, inputGetter, list, map, builder, this);
   }
 
   public RelDataType nullifyType(RelDataType type, boolean nullable) {
