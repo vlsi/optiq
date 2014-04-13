@@ -580,18 +580,35 @@ public class RexImpTable {
         }
       }
 
-      final Expression box =
-          Expressions.box(
-              implementCall(translator, call, implementor, nullAs));
+      Expression nonBoxed = implementCall(translator, call,
+          implementor, nullAs);
+      Expression box =
+          Expressions.box(nonBoxed);
 
       if (translator == translator0) {
         // No nesting ifs required
         // Optimize just in case (is it really required?)
         return optimize(box);
       }
-      // Declare variable for result in the top-most translator
-      Expression result = translator0.declareLocal("res", box.getType(), Types.castIfNecessary(box
-                                .getType(), NULL_EXPR));
+      Expression result;
+      if (box != nonBoxed) {
+        ParameterExpression resultNonBoxed = translator0.declareLocal("res",
+            nonBoxed.getType(),
+            null);
+        translator.addStatement(Expressions.statement(Expressions.assign
+            (resultNonBoxed, nonBoxed)));
+
+        box = Expressions.box(resultNonBoxed);
+
+        // Declare variable for result in the top-most translator
+        result = translator0.declareLocal(resultNonBoxed.name
+                                                     + "Boxed", box.getType(),
+            ConstantUntypedNull.INSTANCE);
+      } else {
+        // Declare variable for result in the top-most translator
+        result = translator0.declareLocal("res", box.getType(),
+            ConstantUntypedNull.INSTANCE);
+      }
       // Store result into the result variable from deepest translator
       translator.addStatement(Expressions.statement(Expressions.assign
           (result, box)));

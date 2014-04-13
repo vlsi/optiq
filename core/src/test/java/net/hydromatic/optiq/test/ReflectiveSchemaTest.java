@@ -277,10 +277,10 @@ public class ReflectiveSchemaTest {
     final OptiqAssert.AssertThat with =
         OptiqAssert.that()
             .with("s", new CatchallSchema());
-    checkAgg(with, "min");
-    checkAgg(with, "max");
+//    checkAgg(with, "min");
+//    checkAgg(with, "max");
     checkAgg(with, "avg");
-    checkAgg(with, "count");
+//    checkAgg(with, "count");
   }
 
   private void checkAgg(OptiqAssert.AssertThat with, String fn) {

@@ -65,6 +65,8 @@ public class RexToLixTranslator {
   private final BlockBuilder rootBlockBuilder;
   private final Map<RexNode, Boolean> exprNullableMap;
   private final RexToLixTranslator parent;
+  private final Map<ParameterExpression, ParameterExpression> unboxedLocals
+      = new IdentityHashMap<ParameterExpression, ParameterExpression>();
 
   private static Method findMethod(
       Class<?> clazz, String name, Class... parameterTypes) {
@@ -412,10 +414,18 @@ public class RexToLixTranslator {
           RexImpTable.NullAs.NULL);
       expression = getTranslatedExpression(nullKey);
       if (expression != null) {
-        Expression unboxed = nullAs.handle(expression);
-        if (unboxed != expression) {
-          unboxed = list.append("t" + ref.getIndex() + "_" + nullAs.name(),
-              unboxed);
+        Expression unboxed = null;
+        if (expression instanceof ParameterExpression) {
+          unboxed = unboxedLocals.get(expression);
+        }
+        if (unboxed == null) {
+          unboxed = nullAs.handle(expression);
+          if (unboxed != expression) {
+            unboxed = list.append("t" + ref.getIndex() + "_" + nullAs.name(),
+                unboxed);
+          }
+        } else {
+          unboxed = unboxed;
         }
         translatedRex.put(nullKey, unboxed);
         return unboxed;
@@ -839,7 +849,7 @@ public class RexToLixTranslator {
         builder, this);
   }
 
-  public Expression declareLocal(String name, Type type, Expression initializer) {
+  public ParameterExpression declareLocal(String name, Type type, Expression initializer) {
     ParameterExpression pe = Expressions.parameter(type,
         list.newName(name));
     list.add(Expressions.declare(0, pe, initializer));
@@ -847,6 +857,30 @@ public class RexToLixTranslator {
   }
 
   public void addStatement(Statement statement) {
+    if (statement instanceof GotoStatement) {
+      GotoStatement goto_ = (GotoStatement) statement;
+      if (goto_.kind == GotoExpressionKind.Sequence
+          && goto_.expression instanceof BinaryExpression) {
+        BinaryExpression bin = (BinaryExpression) goto_.expression;
+        if (bin.getNodeType() == ExpressionType.Assign) {
+          if (bin.expression0 instanceof ParameterExpression
+              && bin.expression1 instanceof MethodCallExpression) {
+            MethodCallExpression method = (MethodCallExpression) bin.expression1;
+            if ("valueOf".equals(method.method.getName())
+                && method.targetExpression == null
+                && method.expressions != null
+                && method.expressions.size() == 1
+                && Primitive.isBox(method.method.getDeclaringClass())) {
+              Expression expr0 = method.expressions.get(0);
+              if (expr0 instanceof ParameterExpression) {
+                unboxedLocals.put((ParameterExpression) bin.expression0,
+                    (ParameterExpression) expr0);
+              }
+            }
+          }
+        }
+      }
+    }
     list.add(statement);
   }
 
