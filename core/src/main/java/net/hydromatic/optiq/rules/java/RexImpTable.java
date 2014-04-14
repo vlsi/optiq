@@ -535,7 +535,7 @@ public class RexImpTable {
     final RexCall call2 = call2(harmonize, translator, call);
     try {
       return implementNullSemantics(
-          translator, call2, nullAs, implementor);
+          translator, call2, nullAs, nullPolicy, implementor);
     } catch (RexToLixTranslator.AlwaysNull e) {
       switch (nullAs) {
       case NOT_POSSIBLE:
@@ -554,79 +554,31 @@ public class RexImpTable {
       RexToLixTranslator translator,
       RexCall call,
       NullAs nullAs,
-      NotNullImplementor implementor) {
+      NullPolicy nullPolicy, NotNullImplementor implementor) {
     final List<Expression> list = new ArrayList<Expression>();
     switch (nullAs) {
     case NULL:
       // v0 == null || v1 == null ? null : f(v0, v1)
-      // : translator
-      // ? result;
-      // if (v0 == null) {
-      //   result = null;
-      // } else { // nestedTranslator1
-      //   result = f(v0);
-      // }
-      final RexToLixTranslator translator0 = translator;
-      final List<Pair<Expression, RexToLixTranslator>>
-          tests = new ArrayList<Pair<Expression, RexToLixTranslator>>();
-      for (RexNode operand : call.getOperands()) {
-        if (translator.isNullable(operand)) {
-          Expression expr = translator.translate(
-              operand, NullAs.IS_NOT_NULL);
-          tests.add(new Pair<Expression, RexToLixTranslator>(
-              expr, translator));
-          translator = translator.setNullable(operand, false);
-          translator = translator.goDeeper();
+      for (Ord<RexNode> operand : Ord.zip(call.getOperands())) {
+        if (translator.isNullable(operand.e)) {
+//          HashSet<RexNode> nonNullables = new HashSet<RexNode>();
+//          nonNullables.add(operand.e);
+//          translator.addNonNullables(nonNullables);
+          list.add(
+              translator.translate(
+                  operand.e, NullAs.IS_NULL));
+//          translator.addNonNullables(nonNullables);
+          translator = translator.setNullable(operand.e, false);
         }
       }
-
-      Expression nonBoxed = implementCall(translator, call,
-          implementor, nullAs);
-      Expression box =
-          Expressions.box(nonBoxed);
-
-      if (translator == translator0) {
-        // No nesting ifs required
-        // Optimize just in case (is it really required?)
-        return optimize(box);
-      }
-      Expression result;
-      if (box != nonBoxed) {
-        ParameterExpression resultNonBoxed = translator0.declareLocal("res",
-            nonBoxed.getType(),
-            null);
-        translator.addStatement(Expressions.statement(Expressions.assign
-            (resultNonBoxed, nonBoxed)));
-
-        box = Expressions.box(resultNonBoxed);
-
-        // Declare variable for result in the top-most translator
-        result = translator0.declareLocal(resultNonBoxed.name
-                                                     + "Boxed", box.getType(),
-            ConstantUntypedNull.INSTANCE);
-      } else {
-        // Declare variable for result in the top-most translator
-        result = translator0.declareLocal("res", box.getType(),
-            ConstantUntypedNull.INSTANCE);
-      }
-      // Store result into the result variable from deepest translator
-      translator.addStatement(Expressions.statement(Expressions.assign
-          (result, box)));
-
-      // Now translator.toBlock() is as follows: {
-      //   result = f(v0)
-      // }
-
-      for (int i = tests.size() - 1; i >= 0; i--) {
-        Expression cond = tests.get(i).left;
-        RexToLixTranslator trans = tests.get(i).right;
-        trans.addStatement(optimize(Expressions.ifThen(
-            cond, translator.toBlock()
-        )));
-        translator = trans;
-      }
-
-      return result;
+      final Expression box =
+          Expressions.box(
+              implementCall(translator, call, implementor, nullAs));
+      return optimize(
+          Expressions.condition(
+              Expressions.foldOr(list),
+              Types.castIfNecessary(box.getType(), NULL_EXPR),
+              box));
     case FALSE:
       // v0 != null && v1 != null && f(v0, v1)
       for (Ord<RexNode> operand : Ord.zip(call.getOperands())) {
@@ -643,6 +595,14 @@ public class RexImpTable {
       // Need to transmit to the implementor the fact that call cannot
       // return null. In particular, it should return a primitive (e.g.
       // int) rather than a box type (Integer).
+      if (nullPolicy == NullPolicy.STRICT) {
+        // arguments are 100% non null
+        for (RexNode arg : call.getOperands()) {
+          if (translator.isNullable(arg)) {
+            translator = translator.setNullable(arg, false);
+          }
+        }
+      }
       translator = translator.setNullable(call, false);
       // fall through
     default:

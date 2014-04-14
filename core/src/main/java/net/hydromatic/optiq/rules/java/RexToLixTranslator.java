@@ -805,11 +805,14 @@ public class RexToLixTranslator {
    * @return Whether expression is nullable in the current translation context
    */
   public boolean isNullable(RexNode e) {
+    if (!e.getType().isNullable()) {
+      return false;
+    }
     final Boolean b = exprNullableMap.get(e);
     if (b != null) {
       return b;
     }
-    return e.getType().isNullable();
+    return true;
   }
 
   /** Creates a read-only copy of this translator that records that a given
