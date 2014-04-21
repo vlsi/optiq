@@ -63,6 +63,18 @@ public interface PhysType {
    */
   Expression fieldReference(Expression expression, int field);
 
+  /** Generates a reference to a given field in an expression.
+   *
+   * <p>For example given {@code expression=employee} and {@code field=2},
+   * generates</p>
+   * <pre>{@code employee.deptno}</pre>
+   *
+   * @param expression Expression
+   * @param field Ordinal of field
+   * @return Expression to access the field of the expression
+   */
+  Expression fieldReferenceNoCast(Expression expression, int field);
+
   /** Generates an accessor function for a given list of fields.  The resulting
    * object is a {@link List} (implementing {@link Object#hashCode()} and
    * {@link Object#equals(Object)} per that interface) and also implements
@@ -128,6 +140,14 @@ public interface PhysType {
    * @return Expression to create a row
    */
   Expression record(List<Expression> expressions);
+
+  /** Generates an expression that creates a record for a row, initializing
+   * its fields with the given expressions. There must be one expression per
+   * field.
+   *
+   * @return Expression to create a row
+   */
+  Expression emptyRecord();
 
   /** Returns the format. */
   JavaRowFormat getFormat();

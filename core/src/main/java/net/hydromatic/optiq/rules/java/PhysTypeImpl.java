@@ -400,6 +400,10 @@ public class PhysTypeImpl implements PhysType {
     return format.record(javaRowClass, expressions);
   }
 
+  public Expression emptyRecord() {
+    return format.emptyRecord(javaRowClass, rowType.getFieldCount());
+  }
+
   public Type getJavaRowType() {
     return javaRowClass;
   }
@@ -506,7 +510,15 @@ public class PhysTypeImpl implements PhysType {
 
   public Expression fieldReference(
       Expression expression, int field) {
-    return format.field(expression, field, fieldClass(field));
+    return RexToLixTranslator.convert(
+        fieldReferenceNoCast(expression, field)
+        , fieldClass(field))
+    ;
+  }
+
+  public Expression fieldReferenceNoCast(
+      Expression expression, int field) {
+    return format.field(expression, field);
   }
 }
 

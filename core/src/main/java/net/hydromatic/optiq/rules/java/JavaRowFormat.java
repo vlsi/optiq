@@ -36,6 +36,7 @@ import java.util.List;
  */
 public enum JavaRowFormat {
   CUSTOM {
+    @Override
     Type javaRowClass(
         JavaTypeFactory typeFactory,
         RelDataType type) {
@@ -43,6 +44,7 @@ public enum JavaRowFormat {
       return typeFactory.getJavaClass(type);
     }
 
+    @Override
     public Expression record(
         Type javaRowClass, List<Expression> expressions) {
       switch (expressions.size()) {
@@ -54,8 +56,14 @@ public enum JavaRowFormat {
       }
     }
 
+    @Override
+    public Expression emptyRecord(Type javaRowClass, int fieldCount) {
+      return Expressions.new_(javaRowClass);
+    }
+
+    @Override
     public MemberExpression field(
-        Expression expression, int field, Class fieldType) {
+        Expression expression, int field) {
       final Type type = expression.getType();
       if (type instanceof Types.RecordType) {
         Types.RecordType recordType = (Types.RecordType) type;
@@ -73,6 +81,7 @@ public enum JavaRowFormat {
   },
 
   SCALAR {
+    @Override
     Type javaRowClass(
         JavaTypeFactory typeFactory,
         RelDataType type) {
@@ -81,14 +90,21 @@ public enum JavaRowFormat {
           type.getFieldList().get(0).getType());
     }
 
+    @Override
     public Expression record(
         Type javaRowClass, List<Expression> expressions) {
       assert expressions.size() == 1;
       return expressions.get(0);
     }
 
+    @Override
+    public Expression emptyRecord(Type javaRowClass, int fieldCount) {
+      return Expressions.constant(null, javaRowClass);
+    }
+
+    @Override
     public Expression field(
-        Expression expression, int field, Class fieldType) {
+        Expression expression, int field) {
       assert field == 0;
       return expression;
     }
@@ -98,12 +114,14 @@ public enum JavaRowFormat {
    * (empty list is a good singleton) but sometimes also for records with 2 or
    * more fields that you need to be comparable, say as a key in a lookup. */
   LIST {
+    @Override
     Type javaRowClass(
         JavaTypeFactory typeFactory,
         RelDataType type) {
       return FlatLists.ComparableList.class;
     }
 
+    @Override
     public Expression record(
         Type javaRowClass, List<Expression> expressions) {
       switch (expressions.size()) {
@@ -142,17 +160,28 @@ public enum JavaRowFormat {
     }
 
     @Override
+    public Expression emptyRecord(Type javaRowClass, int fieldCount) {
+      if (fieldCount == 0) {
+        return Expressions.field(
+                  null,
+                  Collections.class,
+                  "EMPTY_LIST");
+      }
+      throw new UnsupportedOperationException(
+          "LIST physical types is not supported in row reuse mode.");
+    }
+
+    @Override
     public Expression field(
-        Expression expression, int field, Class fieldType) {
-      return RexToLixTranslator.convert(
-          Expressions.call(expression,
-              BuiltinMethod.LIST_GET.method,
-              Expressions.constant(field)),
-          fieldType);
+        Expression expression, int field) {
+      return Expressions.call(expression,
+                BuiltinMethod.LIST_GET.method,
+                Expressions.constant(field));
     }
   },
 
   ARRAY {
+    @Override
     Type javaRowClass(
         JavaTypeFactory typeFactory,
         RelDataType type) {
@@ -160,10 +189,17 @@ public enum JavaRowFormat {
       return Object[].class;
     }
 
+    @Override
     public Expression record(
         Type javaRowClass, List<Expression> expressions) {
       return Expressions.newArrayInit(
           Object.class, stripCasts(expressions));
+    }
+
+    @Override
+    public Expression emptyRecord(Type javaRowClass, int fieldCount) {
+      return Expressions.newArrayBounds(Object.class, 1,
+          Expressions.constant(fieldCount));
     }
 
     @Override
@@ -173,10 +209,8 @@ public enum JavaRowFormat {
     }
 
     @Override
-    public Expression field(Expression expression, int field, Class fieldType) {
-      return RexToLixTranslator.convert(
-          Expressions.arrayIndex(expression, Expressions.constant(field)),
-          fieldType);
+    public Expression field(Expression expression, int field) {
+      return Expressions.arrayIndex(expression, Expressions.constant(field));
     }
   };
 
@@ -198,6 +232,9 @@ public enum JavaRowFormat {
 
   public abstract Expression record(
       Type javaRowClass, List<Expression> expressions);
+
+  public abstract Expression emptyRecord(
+      Type javaRowClass, int fieldCount);
 
   private static List<Expression> stripCasts(
       final List<Expression> expressions) {
@@ -221,7 +258,7 @@ public enum JavaRowFormat {
   }
 
   public abstract Expression field(
-      Expression expression, int field, Class fieldType);
+      Expression expression, int field);
 }
 
 // End JavaRowFormat.java

@@ -702,6 +702,9 @@ public class JavaRules {
                     Expressions.constant(false)));
       }
 
+      ParameterExpression currentRow = Expressions.parameter(
+          physType.getJavaRowType(), "L4J$V$current");
+
       final BlockBuilder builder3 = new BlockBuilder();
       List<Expression> expressions =
           RexToLixTranslator.translateProjects(
@@ -711,9 +714,14 @@ public class JavaRules {
               new RexToLixTranslator.InputGetterImpl(
                   Collections.singletonList(
                       Pair.of(input, result.physType))));
+      for(int i=0; i<physType.getRowType().getFieldCount(); i++) {
+        builder3.add(Expressions.statement(Expressions.assign(
+            physType.fieldReferenceNoCast(currentRow, i),
+            expressions.get(i))));
+      }
       builder3.add(
           Expressions.return_(
-              null, physType.record(expressions)));
+              null, currentRow));//physType.record(expressions)));
       BlockStatement currentBody =
           builder3.toBlock();
 
@@ -725,6 +733,10 @@ public class JavaRules {
               enumeratorType,
               NO_EXPRS,
               Expressions.<MemberDeclaration>list(
+                  Expressions.fieldDecl(
+                      Modifier.PRIVATE
+                      | Modifier.FINAL
+                      , currentRow, physType.emptyRecord()),
                   Expressions.fieldDecl(
                       Modifier.PUBLIC
                       | Modifier.FINAL,
